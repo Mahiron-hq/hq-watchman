@@ -65,6 +65,11 @@ HQ Watchman is a self-hosted Telegram bot for one person. It sends the owner pri
 5. Add games by name, pick language, time zone and quiet hours.
 6. Press **Install**: the app checks the signature of the release files, sets everything up and checks that the bot works.
 
+<p align="center">
+  <img src="docs/images/setup-wizard.png" width="49%" alt="Setup wizard">
+  <img src="docs/images/setup-games.png" width="49%" alt="Games in the setup app">
+</p>
+
 Later the same app changes settings, shows logs, updates the bot with automatic rollback, backs up and restores the database and removes the bot. Download it from [Releases](https://github.com/Mahiron-hq/hq-watchman/releases); details in [docs/install.en.md](docs/install.en.md).
 
 ### Install
@@ -151,6 +156,11 @@ HQ Watchman – Telegram-бот для одного человека, котор
 4. Для GitHub нажмите две кнопки в браузере: GitHub App только на чтение создаётся и устанавливается само.
 5. Добавьте игры по названию, выберите язык, часовой пояс и тихие часы.
 6. Нажмите **Установить**: программа проверит подпись файлов релиза, всё настроит и проверит работу бота.
+
+<p align="center">
+  <img src="docs/images/setup-wizard.png" width="49%" alt="Мастер установки">
+  <img src="docs/images/setup-timezone.png" width="49%" alt="Настройки в программе установки">
+</p>
 
 Потом та же программа меняет настройки, показывает журнал, обновляет бота с автоматическим откатом, делает и восстанавливает резервную копию базы и удаляет бота. Скачать: [Releases](https://github.com/Mahiron-hq/hq-watchman/releases); подробности в [docs/install.ru.md](docs/install.ru.md).
 

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { Button, LineEdit, CheckBox, Switch, ScrollView, Spinner, Palette } from "std-widgets.slint";
+import { Button, LineEdit, CheckBox, Switch, ScrollView, ListView, Spinner, Palette } from "std-widgets.slint";
 
 export struct GameRow { appid: string, name: string }
 export struct Found { appid: string, name: string }
+export struct Zone { name: string, label: string }
 export struct ToggleRow { key: string, label: string, on: bool, header: bool, action: string }
 export struct ProfileRow { name: string, host: string, port: string, user: string, target: string, key-path: string }
 export struct StepRow { id: string, label: string }
@@ -73,7 +74,9 @@ export global S {
     // notifications
     in-out property <bool> bot-en;
     in-out property <string> timezone;
-    in-out property <[string]> tz-found;
+    in-out property <[Zone]> tz-list;
+    in-out property <bool> tz-open;
+    in-out property <string> tz-offset;
     in-out property <bool> quiet-on: true;
     in-out property <string> quiet-start: "22:00";
     in-out property <string> quiet-end: "08:00";
@@ -102,6 +105,9 @@ export global S {
     callback set-lang(bool);
     callback go-step(string);
     callback tz-edited(string);
+    callback tz-toggle();
+    callback tz-pick(string);
+    callback game-edited(string);
     callback next();
     callback back();
     callback go(string);
@@ -141,7 +147,6 @@ export global S {
     callback reconfigure();
 }
 
-// Ctrl shortcuts also work with a Russian keyboard layout (м, с, ч, ф).
 component Edit inherits FocusScope {
     in-out property <string> text;
     in property <string> placeholder-text;
@@ -149,17 +154,8 @@ component Edit inherits FocusScope {
     callback accepted();
     callback edited(string);
     focus-on-click: false;
-    capture-key-pressed(event) => {
-        if (event.modifiers.control && !event.modifiers.alt) {
-            if (event.text == "м" || event.text == "М") { le.paste(); return accept; }
-            if (event.text == "с" || event.text == "С") { le.copy(); return accept; }
-            if (event.text == "ч" || event.text == "Ч") { le.cut(); return accept; }
-            if (event.text == "ф" || event.text == "Ф") { le.select-all(); return accept; }
-        }
-        return reject;
-    }
     HorizontalLayout {
-        le := LineEdit {
+        LineEdit {
             text <=> root.text;
             placeholder-text: root.placeholder-text;
             input-type: root.input-type;
@@ -178,15 +174,8 @@ component Sel inherits FocusScope {
     in property <int> font-weight: 400;
     in property <string> font-family;
     focus-on-click: false;
-    capture-key-pressed(event) => {
-        if (event.modifiers.control && !event.modifiers.alt) {
-            if (event.text == "с" || event.text == "С") { ti.copy(); return accept; }
-            if (event.text == "ф" || event.text == "Ф") { ti.select-all(); return accept; }
-        }
-        return reject;
-    }
     VerticalLayout {
-        ti := TextInput {
+        TextInput {
             text: root.text;
             read-only: true;
             single-line: false;
@@ -499,11 +488,12 @@ component SteamPage inherits VerticalLayout {
 
 component GamesEditor inherits VerticalLayout {
     spacing: 10px;
+    alignment: start;
     Field {
         label: Tr.t("Название игры, ссылка на магазин или AppID", "Game name, store link or AppID");
         HorizontalLayout {
             spacing: 6px;
-            Edit { text <=> S.game-query; accepted => { S.game-search(); } }
+            Edit { text <=> S.game-query; accepted => { S.game-search(); } edited(t) => { S.game-edited(t); } }
             Button { text: Tr.t("Найти", "Search"); enabled: !S.busy; clicked => { S.game-search(); } }
         }
     }
@@ -535,12 +525,27 @@ component NotifyFields inherits VerticalLayout {
         CheckBox { text: "English"; checked: S.bot-en; toggled => { S.bot-en = self.checked; } }
     }
     Field {
-        label: Tr.t("Часовой пояс: начните вводить город, например Moscow", "Time zone: start typing a city, e.g. Berlin");
-        Edit { text <=> S.timezone; placeholder-text: "Europe/Moscow"; edited(t) => { S.tz-edited(t); } }
+        label: Tr.t("Часовой пояс", "Time zone");
+        HorizontalLayout {
+            spacing: 6px;
+            Edit { text <=> S.timezone; placeholder-text: "Europe/Moscow"; edited(t) => { S.tz-edited(t); } }
+            Text { text: S.tz-offset; vertical-alignment: center; min-width: 90px; }
+            Button { text: S.tz-open ? "▲" : "▼"; clicked => { S.tz-toggle(); } }
+        }
     }
-    for z in S.tz-found: HorizontalLayout {
-        alignment: start;
-        Button { text: z; clicked => { S.timezone = z; S.tz-found = []; } }
+    if S.tz-open: Rectangle {
+        height: 240px;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: #8884;
+        ListView {
+            for z in S.tz-list: Rectangle {
+                height: 30px;
+                background: ta.has-hover ? #3b82f633 : (z.name == S.timezone ? #3b82f622 : transparent);
+                Text { x: 10px; text: z.label; vertical-alignment: center; height: parent.height; }
+                ta := TouchArea { clicked => { S.tz-pick(z.name); } }
+            }
+        }
     }
     CheckBox { text: Tr.t("Тихие часы: сообщения без звука", "Quiet hours: messages without sound"); checked <=> S.quiet-on; }
     if S.quiet-on: HorizontalLayout {
@@ -668,6 +673,7 @@ component ManagePage inherits VerticalLayout {
             VerticalLayout {
                 spacing: 4px;
                 padding-right: 12px;
+                alignment: start;
                 for r in S.toggles: HorizontalLayout {
                     spacing: 8px;
                     if r.header: Label { text: r.label; font-size: 15px; }
@@ -679,7 +685,7 @@ component ManagePage inherits VerticalLayout {
         HorizontalLayout { alignment: start; Button { text: Tr.t("Сохранить", "Save"); enabled: !S.busy; clicked => { S.save-settings(); } } }
     }
     if S.tab == "games": VerticalLayout {
-        ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; GamesEditor {} } }
+        ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; alignment: start; GamesEditor {} } }
         HorizontalLayout { alignment: start; Button { text: Tr.t("Сохранить", "Save"); enabled: !S.busy; clicked => { S.save-settings(); } } }
     }
     if S.tab == "general": VerticalLayout {
@@ -698,6 +704,7 @@ component ManagePage inherits VerticalLayout {
         VerticalLayout {
             spacing: 12px;
             padding-right: 12px;
+            alignment: start;
             Label { text: Tr.t("Обновление", "Update"); }
             Sel { text: S.update-text; }
             HorizontalLayout {

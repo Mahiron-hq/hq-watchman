@@ -40,7 +40,7 @@ use zeroize::Zeroizing;
 use crate::deploy::{Log, ServerInfo};
 use crate::plan::{GithubPlan, Plan, Proxy, Target};
 use crate::ssh::Session;
-use crate::ui::{Found, GameRow, MainWindow, ProfileRow, StepRow, ToggleRow, Tr, S};
+use crate::ui::{Found, GameRow, MainWindow, ProfileRow, StepRow, ToggleRow, Tr, Zone, S};
 
 const POLLING_HOOK_HOST: &str = "https://hq-watchman.invalid/";
 
@@ -339,6 +339,83 @@ fn set_games(s: &S, list: &[(u32, String)]) {
     s.set_games(ModelRc::new(VecModel::from(rows)));
 }
 
+/// Store search; a number or link also looks up that app directly.
+async fn find_games(q: &str) -> Result<Vec<(u32, String)>> {
+    let http = services::http()?;
+    let mut out = Vec::new();
+    if let Some(id) = hq_watchman::steam::store::parse_appid(q) {
+        if let Ok(Some(name)) = hq_watchman::steam::store::name(&http, id).await {
+            out.push((id, name));
+        }
+        if !q.trim().bytes().all(|b| b.is_ascii_digit()) {
+            return Ok(out);
+        }
+    }
+    for f in hq_watchman::steam::store::search(&http, q).await? {
+        if !out.iter().any(|(id, _)| *id == f.appid) {
+            out.push((f.appid, f.name));
+        }
+    }
+    Ok(out)
+}
+
+fn found_model(list: Vec<(u32, String)>) -> ModelRc<Found> {
+    let rows: Vec<Found> = list
+        .into_iter()
+        .map(|(id, n)| Found {
+            appid: id.to_string().into(),
+            name: n.into(),
+        })
+        .collect();
+    ModelRc::new(VecModel::from(rows))
+}
+
+/// All named zones with their current UTC offset, sorted by offset.
+fn all_zones() -> Vec<(String, i32)> {
+    let now = jiff::Timestamp::now();
+    let mut v: Vec<(String, i32)> = jiff::tz::db()
+        .available()
+        .map(|n| n.as_str().to_owned())
+        .filter(|n| n.contains('/') && !n.starts_with("Etc/"))
+        .filter_map(|n| {
+            let off = jiff::tz::TimeZone::get(&n).ok()?.to_offset(now).seconds();
+            Some((n, off))
+        })
+        .collect();
+    v.push(("UTC".into(), 0));
+    v.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    v
+}
+
+fn fmt_offset(secs: i32) -> String {
+    let sign = if secs < 0 { '-' } else { '+' };
+    let a = secs.unsigned_abs();
+    format!("UTC{sign}{:02}:{:02}", a / 3600, a % 3600 / 60)
+}
+
+fn offset_label(name: &str) -> String {
+    jiff::tz::TimeZone::get(name.trim())
+        .map(|tz| fmt_offset(tz.to_offset(jiff::Timestamp::now()).seconds()))
+        .unwrap_or_default()
+}
+
+fn zone_model(zones: &[(String, i32)], filter: &str) -> ModelRc<Zone> {
+    let q = filter.trim().to_lowercase().replace(' ', "_");
+    let rows: Vec<Zone> = zones
+        .iter()
+        .filter(|(n, off)| {
+            q.is_empty()
+                || n.to_lowercase().contains(&q)
+                || fmt_offset(*off).to_lowercase().contains(&q)
+        })
+        .map(|(n, off)| Zone {
+            name: n.as_str().into(),
+            label: format!("{}   {n}", fmt_offset(*off)).into(),
+        })
+        .collect();
+    ModelRc::new(VecModel::from(rows))
+}
+
 fn valid_tz(tz: &str) -> bool {
     !tz.is_empty() && tz.len() <= 64 && jiff::tz::TimeZone::get(tz).is_ok()
 }
@@ -623,29 +700,64 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
         }
     });
 
-    let zones: Arc<Vec<String>> = Arc::new(
-        jiff::tz::db()
-            .available()
-            .map(|n| n.as_str().to_owned())
-            .filter(|n| n.contains('/') && !n.starts_with("Etc/"))
-            .collect(),
-    );
+    let zones = Arc::new(all_zones());
     let w = ui.as_weak();
+    let z = Arc::clone(&zones);
     s.on_tz_edited(move |text| {
         let Some(ui) = w.upgrade() else { return };
-        let q = text.trim().to_lowercase().replace(' ', "_");
-        let found: Vec<SharedString> = if q.chars().count() < 2 {
-            Vec::new()
-        } else {
-            zones
-                .iter()
-                .filter(|z| z.to_lowercase().contains(&q) && z.as_str() != text.trim())
-                .take(6)
-                .map(|z| z.as_str().into())
-                .collect()
-        };
-        ui.global::<S>()
-            .set_tz_found(ModelRc::new(VecModel::from(found)));
+        let s = ui.global::<S>();
+        s.set_tz_list(zone_model(&z, &text));
+        s.set_tz_open(true);
+        s.set_tz_offset(offset_label(&text).into());
+    });
+
+    let w = ui.as_weak();
+    let z = Arc::clone(&zones);
+    s.on_tz_toggle(move || {
+        let Some(ui) = w.upgrade() else { return };
+        let s = ui.global::<S>();
+        let open = !s.get_tz_open();
+        if open {
+            s.set_tz_list(zone_model(&z, ""));
+        }
+        s.set_tz_open(open);
+    });
+
+    let w = ui.as_weak();
+    s.on_tz_pick(move |name| {
+        let Some(ui) = w.upgrade() else { return };
+        let s = ui.global::<S>();
+        s.set_tz_offset(offset_label(&name).into());
+        s.set_timezone(name);
+        s.set_tz_open(false);
+    });
+
+    let w = ui.as_weak();
+    let cc = c.clone();
+    let generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    s.on_game_edited(move |text| {
+        let q = text.trim().to_owned();
+        let my = generation.fetch_add(1, Ordering::Relaxed) + 1;
+        if q.chars().count() < 3 {
+            if let Some(ui) = w.upgrade() {
+                ui.global::<S>()
+                    .set_found(ModelRc::new(VecModel::from(Vec::<Found>::new())));
+            }
+            return;
+        }
+        let g = Arc::clone(&generation);
+        let c = cc.clone();
+        cc.rt.spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+            if g.load(Ordering::Relaxed) != my {
+                return;
+            }
+            let found = find_games(&q).await.unwrap_or_default();
+            if g.load(Ordering::Relaxed) != my {
+                return;
+            }
+            c.ui(move |ui| ui.global::<S>().set_found(found_model(found)));
+        });
     });
 
     s.on_open_url(|url| {
@@ -1028,41 +1140,11 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
             return;
         }
         cc.task(move |c| async move {
-            let http = services::http()?;
-            let found = if let Some(id) = hq_watchman::steam::store::parse_appid(&q) {
-                let name = hq_watchman::steam::store::name(&http, id)
-                    .await?
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "{}",
-                            tr!(
-                                "Steam не знает такой AppID",
-                                "Steam does not know this AppID"
-                            )
-                        )
-                    })?;
-                vec![(id, name)]
-            } else {
-                hq_watchman::steam::store::search(&http, &q)
-                    .await?
-                    .into_iter()
-                    .map(|f| (f.appid, f.name))
-                    .collect()
-            };
+            let found = find_games(&q).await?;
             if found.is_empty() {
                 bail!("{}", tr!("Ничего не найдено", "Nothing found"));
             }
-            c.ui(move |ui| {
-                let rows: Vec<Found> = found
-                    .into_iter()
-                    .map(|(id, n)| Found {
-                        appid: id.to_string().into(),
-                        name: n.into(),
-                    })
-                    .collect();
-                ui.global::<S>()
-                    .set_found(ModelRc::new(VecModel::from(rows)));
-            });
+            c.ui(move |ui| ui.global::<S>().set_found(found_model(found)));
             Ok(())
         });
     });
@@ -1396,6 +1478,7 @@ fn show_managed(ui: &MainWindow, m: &Managed) {
     set_games(&s, &games);
     s.set_bot_en(m.settings.language == Lang::En);
     s.set_timezone(m.settings.timezone.clone().into());
+    s.set_tz_offset(offset_label(&m.settings.timezone).into());
     s.set_quiet_on(m.settings.quiet_hours.enabled);
     s.set_quiet_start(m.settings.quiet_hours.start.clone().into());
     s.set_quiet_end(m.settings.quiet_hours.end.clone().into());
@@ -1947,17 +2030,16 @@ fn main() -> Result<()> {
     s.set_version(env!("CARGO_PKG_VERSION").into());
     s.set_windows_host(cfg!(windows));
     s.set_bot_en(en);
-    s.set_timezone(
-        iana_time_zone::get_timezone()
-            .unwrap_or_else(|_| "UTC".into())
-            .into(),
-    );
+    let tz = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into());
+    s.set_tz_offset(offset_label(&tz).into());
+    s.set_timezone(tz.into());
     fill_profiles(&s);
     let c = Ctx {
         ui: ui.as_weak(),
         rt: rt.handle().clone(),
         st: Arc::new(Mutex::new(State::default())),
     };
+    latin_shortcuts(&ui);
     wire_wizard(&ui, &c);
     wire_manage(&ui, &c);
     refresh_steps(&ui);
@@ -1965,6 +2047,46 @@ fn main() -> Result<()> {
     lock(&c.st).cancel.store(true, Ordering::Relaxed);
     rt.shutdown_timeout(std::time::Duration::from_secs(2));
     Ok(())
+}
+
+/// Ctrl+V/C/X/A/Z by physical key: with a non-Latin layout winit does not pass them to Slint.
+fn latin_shortcuts(ui: &MainWindow) {
+    use slint::winit_030::winit::event::{ElementState, WindowEvent};
+    use slint::winit_030::winit::keyboard::{Key, KeyCode, PhysicalKey};
+    use slint::winit_030::{EventResult, WinitWindowAccessor};
+    let ctrl = std::cell::Cell::new(false);
+    ui.window().on_winit_window_event(move |w, ev| {
+        match ev {
+            WindowEvent::ModifiersChanged(m) => ctrl.set(m.state().control_key()),
+            WindowEvent::KeyboardInput { event, .. } if ctrl.get() => {
+                let PhysicalKey::Code(code) = event.physical_key else {
+                    return EventResult::Propagate;
+                };
+                let letter = match code {
+                    KeyCode::KeyV => "v",
+                    KeyCode::KeyC => "c",
+                    KeyCode::KeyX => "x",
+                    KeyCode::KeyA => "a",
+                    KeyCode::KeyZ => "z",
+                    _ => return EventResult::Propagate,
+                };
+                let latin = matches!(&event.logical_key, Key::Character(t) if t.eq_ignore_ascii_case(letter));
+                if latin {
+                    return EventResult::Propagate;
+                }
+                let text: SharedString = letter.into();
+                let e = if event.state == ElementState::Pressed {
+                    slint::platform::WindowEvent::KeyPressed { text }
+                } else {
+                    slint::platform::WindowEvent::KeyReleased { text }
+                };
+                let _ = w.dispatch_event_with_result(e);
+                return EventResult::PreventDefault;
+            }
+            _ => {}
+        }
+        EventResult::Propagate
+    });
 }
 
 /// Russian UI by default when the system language is Russian.
