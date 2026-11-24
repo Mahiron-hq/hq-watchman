@@ -567,6 +567,55 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
         }
     });
 
+    let w = ui.as_weak();
+    s.on_go_step(move |id| {
+        let Some(ui) = w.upgrade() else { return };
+        let s = ui.global::<S>();
+        if s.get_busy() {
+            return;
+        }
+        let page = s.get_page();
+        if page == "connect" || page == "manage" {
+            if id == "connect" {
+                show(&ui, "connect");
+            }
+            return;
+        }
+        let ids = step_ids(&s);
+        let target = ids.iter().position(|p| *p == id.as_str());
+        let current = ids.iter().position(|p| *p == page.as_str());
+        if let (Some(t), Some(c)) = (target, current) {
+            if t < c && id != "progress" {
+                show(&ui, &id);
+            }
+        }
+    });
+
+    let zones: Arc<Vec<String>> = Arc::new(
+        jiff::tz::db()
+            .available()
+            .map(|n| n.as_str().to_owned())
+            .filter(|n| n.contains('/') && !n.starts_with("Etc/"))
+            .collect(),
+    );
+    let w = ui.as_weak();
+    s.on_tz_edited(move |text| {
+        let Some(ui) = w.upgrade() else { return };
+        let q = text.trim().to_lowercase().replace(' ', "_");
+        let found: Vec<SharedString> = if q.chars().count() < 2 {
+            Vec::new()
+        } else {
+            zones
+                .iter()
+                .filter(|z| z.to_lowercase().contains(&q) && z.as_str() != text.trim())
+                .take(6)
+                .map(|z| z.as_str().into())
+                .collect()
+        };
+        ui.global::<S>()
+            .set_tz_found(ModelRc::new(VecModel::from(found)));
+    });
+
     s.on_open_url(|url| {
         let _ = open::that(url.as_str());
     });
@@ -1053,7 +1102,15 @@ async fn run_install(c: &Ctx, plan: &Plan, log: &Log, host: &str) -> Result<()> 
                 "Looking up the latest release on GitHub"
             )
         ));
-        release::latest().await?
+        release::latest().await.map_err(|_| {
+            anyhow!(
+                "{}",
+                tr!(
+                    "Опубликованный релиз на GitHub не найден. Нажмите «Взять файлы из папки…», выберите папку с файлами релиза, затем «Повторить».",
+                    "No published release was found on GitHub. Press \"Use files from a folder…\", choose a folder with the release files, then \"Retry\"."
+                )
+            )
+        })?
     };
     let bundle = release::Bundle::open(source).await?;
     log(format!("  {} {}", tr!("версия", "version"), bundle.version));

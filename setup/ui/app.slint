@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { Button, LineEdit, CheckBox, Switch, ScrollView, ListView, ComboBox, Spinner, TextEdit } from "std-widgets.slint";
+import { Button, LineEdit, CheckBox, Switch, ScrollView, Spinner, Palette } from "std-widgets.slint";
 
 export struct GameRow { appid: string, name: string }
 export struct Found { appid: string, name: string }
@@ -73,6 +73,7 @@ export global S {
     // notifications
     in-out property <bool> bot-en;
     in-out property <string> timezone;
+    in-out property <[string]> tz-found;
     in-out property <bool> quiet-on: true;
     in-out property <string> quiet-start: "22:00";
     in-out property <string> quiet-end: "08:00";
@@ -99,6 +100,8 @@ export global S {
     in-out property <bool> confirm-uninstall;
 
     callback set-lang(bool);
+    callback go-step(string);
+    callback tz-edited(string);
     callback next();
     callback back();
     callback go(string);
@@ -136,14 +139,71 @@ export global S {
     callback reconfigure();
 }
 
+// Ctrl shortcuts also work with a Russian keyboard layout (м, с, ч, ф).
+component Edit inherits FocusScope {
+    in-out property <string> text;
+    in property <string> placeholder-text;
+    in property <InputType> input-type: InputType.text;
+    callback accepted();
+    callback edited(string);
+    focus-on-click: false;
+    capture-key-pressed(event) => {
+        if (event.modifiers.control && !event.modifiers.alt) {
+            if (event.text == "м" || event.text == "М") { le.paste(); return accept; }
+            if (event.text == "с" || event.text == "С") { le.copy(); return accept; }
+            if (event.text == "ч" || event.text == "Ч") { le.cut(); return accept; }
+            if (event.text == "ф" || event.text == "Ф") { le.select-all(); return accept; }
+        }
+        return reject;
+    }
+    HorizontalLayout {
+        le := LineEdit {
+            text <=> root.text;
+            placeholder-text: root.placeholder-text;
+            input-type: root.input-type;
+            enabled: root.enabled;
+            accepted => { root.accepted(); }
+            edited(t) => { root.edited(t); }
+        }
+    }
+}
+
+// Read-only text that can be selected and copied.
+component Sel inherits FocusScope {
+    in property <string> text;
+    in property <brush> color: Palette.foreground;
+    in property <length> font-size: 14px;
+    in property <int> font-weight: 400;
+    in property <string> font-family;
+    focus-on-click: false;
+    capture-key-pressed(event) => {
+        if (event.modifiers.control && !event.modifiers.alt) {
+            if (event.text == "с" || event.text == "С") { ti.copy(); return accept; }
+            if (event.text == "ф" || event.text == "Ф") { ti.select-all(); return accept; }
+        }
+        return reject;
+    }
+    VerticalLayout {
+        ti := TextInput {
+            text: root.text;
+            read-only: true;
+            single-line: false;
+            wrap: word-wrap;
+            color: root.color;
+            font-size: root.font-size;
+            font-weight: root.font-weight;
+            font-family: root.font-family;
+        }
+    }
+}
+
 component Title inherits Text {
     font-size: 22px;
     font-weight: 700;
     wrap: word-wrap;
 }
 
-component Hint inherits Text {
-    wrap: word-wrap;
+component Hint inherits Sel {
     font-size: 13px;
     opacity: 0.75;
 }
@@ -170,10 +230,9 @@ component Link inherits Text {
     }
 }
 
-component Ok inherits Text {
+component Ok inherits Sel {
     color: #16a34a;
     font-weight: 600;
-    wrap: word-wrap;
 }
 
 component Choice inherits Rectangle {
@@ -254,17 +313,17 @@ component ServerFields inherits VerticalLayout {
         Field {
             horizontal-stretch: 3;
             label: Tr.t("Адрес сервера (IP или имя)", "Server address (IP or name)");
-            LineEdit { text <=> S.host; placeholder-text: "203.0.113.10"; }
+            Edit { text <=> S.host; placeholder-text: "203.0.113.10"; }
         }
         Field {
             horizontal-stretch: 1;
             label: Tr.t("Порт SSH", "SSH port");
-            LineEdit { text <=> S.port; input-type: number; }
+            Edit { text <=> S.port; input-type: number; }
         }
         Field {
             horizontal-stretch: 2;
             label: Tr.t("Пользователь", "User");
-            LineEdit { text <=> S.user; }
+            Edit { text <=> S.user; }
         }
     }
     HorizontalLayout {
@@ -274,7 +333,7 @@ component ServerFields inherits VerticalLayout {
     }
     if !S.auth-key: Field {
         label: Tr.t("Пароль (не сохраняется)", "Password (not saved)");
-        LineEdit { text <=> S.password; input-type: password; }
+        Edit { text <=> S.password; input-type: password; }
     }
     if S.auth-key: HorizontalLayout {
         spacing: 10px;
@@ -283,19 +342,19 @@ component ServerFields inherits VerticalLayout {
             label: Tr.t("Файл ключа", "Key file");
             HorizontalLayout {
                 spacing: 6px;
-                LineEdit { text <=> S.key-path; }
+                Edit { text <=> S.key-path; }
                 Button { text: "…"; clicked => { S.pick-key(); } }
             }
         }
         Field {
             horizontal-stretch: 2;
             label: Tr.t("Пароль ключа, если есть", "Key passphrase, if any");
-            LineEdit { text <=> S.key-pass; input-type: password; }
+            Edit { text <=> S.key-pass; input-type: password; }
         }
     }
     if S.user != "root": Field {
         label: Tr.t("Пароль sudo (пусто: как пароль входа)", "sudo password (empty: same as login password)");
-        LineEdit { text <=> S.sudo-pass; input-type: password; }
+        Edit { text <=> S.sudo-pass; input-type: password; }
     }
 }
 
@@ -346,7 +405,7 @@ component TelegramPage inherits VerticalLayout {
         label: Tr.t("Токен бота", "Bot token");
         HorizontalLayout {
             spacing: 6px;
-            LineEdit { text <=> S.tg-token; input-type: password; placeholder-text: "123456789:AA…"; }
+            Edit { text <=> S.tg-token; input-type: password; placeholder-text: "123456789:AA…"; }
             Button { text: Tr.t("Проверить", "Check"); enabled: !S.busy; clicked => { S.tg-check(); } }
         }
     }
@@ -366,7 +425,7 @@ component TelegramPage inherits VerticalLayout {
     if S.tg-admin != "": Ok { text: Tr.t("Владелец: ", "Owner: ") + S.tg-admin-name + " (ID " + S.tg-admin + ")"; }
     Field {
         label: Tr.t("Или введите свой числовой ID Telegram вручную", "Or enter your numeric Telegram ID manually");
-        LineEdit { text <=> S.tg-admin; input-type: number; }
+        Edit { text <=> S.tg-admin; input-type: number; }
     }
 }
 
@@ -375,7 +434,7 @@ component GithubPage inherits VerticalLayout {
     Title { text: "GitHub"; }
     Field {
         label: Tr.t("Ваш логин на GitHub (или имя организации)", "Your GitHub login (or organization name)");
-        LineEdit { text <=> S.gh-login; enabled: S.gh-app == ""; }
+        Edit { text <=> S.gh-login; enabled: S.gh-app == ""; }
     }
     Label { text: Tr.t("Как бот получает события", "How the bot receives events"); }
     Choice {
@@ -394,7 +453,7 @@ component GithubPage inherits VerticalLayout {
     }
     if S.gh-webhook: Field {
         label: Tr.t("Домен для вебхука, например hooks.example.org", "Webhook domain, e.g. hooks.example.org");
-        LineEdit { text <=> S.gh-domain; enabled: S.gh-app == ""; }
+        Edit { text <=> S.gh-domain; enabled: S.gh-app == ""; }
     }
     HorizontalLayout {
         spacing: 10px;
@@ -415,7 +474,7 @@ component SteamPage inherits VerticalLayout {
         label: Tr.t("Ссылка на ваш профиль Steam или SteamID64", "Link to your Steam profile or SteamID64");
         HorizontalLayout {
             spacing: 6px;
-            LineEdit { text <=> S.st-profile; placeholder-text: "https://steamcommunity.com/id/…"; }
+            Edit { text <=> S.st-profile; placeholder-text: "https://steamcommunity.com/id/…"; }
             Button { text: Tr.t("Проверить", "Check"); enabled: !S.busy; clicked => { S.st-check(); } }
         }
     }
@@ -425,7 +484,7 @@ component SteamPage inherits VerticalLayout {
         label: Tr.t("Ключ Steam Web API (необязательно)", "Steam Web API key (optional)");
         HorizontalLayout {
             spacing: 6px;
-            LineEdit { text <=> S.st-key; input-type: password; }
+            Edit { text <=> S.st-key; input-type: password; }
             Button { text: Tr.t("Проверить", "Check"); enabled: !S.busy && S.st-key != ""; clicked => { S.st-key-check(); } }
         }
     }
@@ -440,7 +499,7 @@ component GamesEditor inherits VerticalLayout {
         label: Tr.t("Название игры, ссылка на магазин или AppID", "Game name, store link or AppID");
         HorizontalLayout {
             spacing: 6px;
-            LineEdit { text <=> S.game-query; accepted => { S.game-search(); } }
+            Edit { text <=> S.game-query; accepted => { S.game-search(); } }
             Button { text: Tr.t("Найти", "Search"); enabled: !S.busy; clicked => { S.game-search(); } }
         }
     }
@@ -472,14 +531,18 @@ component NotifyFields inherits VerticalLayout {
         CheckBox { text: "English"; checked: S.bot-en; toggled => { S.bot-en = self.checked; } }
     }
     Field {
-        label: Tr.t("Часовой пояс (IANA)", "Time zone (IANA)");
-        LineEdit { text <=> S.timezone; placeholder-text: "Europe/Moscow"; }
+        label: Tr.t("Часовой пояс: начните вводить город, например Moscow", "Time zone: start typing a city, e.g. Berlin");
+        Edit { text <=> S.timezone; placeholder-text: "Europe/Moscow"; edited(t) => { S.tz-edited(t); } }
+    }
+    for z in S.tz-found: HorizontalLayout {
+        alignment: start;
+        Button { text: z; clicked => { S.timezone = z; S.tz-found = []; } }
     }
     CheckBox { text: Tr.t("Тихие часы: сообщения без звука", "Quiet hours: messages without sound"); checked <=> S.quiet-on; }
     if S.quiet-on: HorizontalLayout {
         spacing: 10px;
-        Field { label: Tr.t("С", "From"); LineEdit { text <=> S.quiet-start; } }
-        Field { label: Tr.t("До", "To"); LineEdit { text <=> S.quiet-end; } }
+        Field { label: Tr.t("С", "From"); Edit { text <=> S.quiet-start; } }
+        Field { label: Tr.t("До", "To"); Edit { text <=> S.quiet-end; } }
     }
 }
 
@@ -493,7 +556,7 @@ component NotifyPage inherits VerticalLayout {
 component SummaryPage inherits VerticalLayout {
     spacing: 12px;
     Title { text: Tr.t("Всё готово к установке", "Ready to install"); }
-    Text { text: S.summary; wrap: word-wrap; }
+    Sel { text: S.summary; }
     Hint { text: Tr.t("Файлы бота берутся из релиза на GitHub и проверяются по подписи и контрольной сумме.", "Bot files come from the GitHub release and are checked by signature and checksum."); }
     if S.release-source != "": Hint { text: Tr.t("Источник файлов: ", "File source: ") + S.release-source; }
     HorizontalLayout {
@@ -511,7 +574,7 @@ component LogView inherits Rectangle {
         content-y: min(0px, self.visible-height - self.content-height);
         VerticalLayout {
             padding: 8px;
-            Text { text: root.text; wrap: word-wrap; font-family: "Consolas"; font-size: 12px; }
+            Sel { text: root.text; font-family: "Consolas"; font-size: 12px; }
         }
     }
 }
@@ -531,7 +594,9 @@ component ProgressPage inherits VerticalLayout {
         if !S.done && !S.failed: Spinner { indeterminate: true; width: 24px; height: 24px; }
         if S.done && S.tg-bot != "": Button { text: Tr.t("Открыть бота", "Open the bot"); clicked => { S.open-url("https://t.me/" + S.tg-bot); } }
         if S.done: Button { text: Tr.t("Управление", "Manage"); clicked => { S.go("manage"); } }
-        if S.failed: Button { text: Tr.t("Повторить", "Retry"); clicked => { S.install(); } }
+        if S.failed: Button { text: Tr.t("‹ Назад", "‹ Back"); enabled: !S.busy; clicked => { S.go("summary"); } }
+        if S.failed: Button { text: Tr.t("Взять файлы из папки…", "Use files from a folder…"); enabled: !S.busy; clicked => { S.pick-folder(); } }
+        if S.failed: Button { text: Tr.t("Повторить", "Retry"); primary: true; enabled: !S.busy; clicked => { S.install(); } }
     }
 }
 
@@ -589,7 +654,7 @@ component ManagePage inherits VerticalLayout {
     }
     if S.tab == "status": VerticalLayout {
         spacing: 8px;
-        Text { text: S.status-text; wrap: word-wrap; }
+        Sel { text: S.status-text; }
         Rectangle { vertical-stretch: 1; }
     }
     if S.tab == "settings": VerticalLayout {
@@ -630,7 +695,7 @@ component ManagePage inherits VerticalLayout {
             spacing: 12px;
             padding-right: 12px;
             Label { text: Tr.t("Обновление", "Update"); }
-            Text { text: S.update-text; wrap: word-wrap; }
+            Sel { text: S.update-text; }
             HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
@@ -693,6 +758,10 @@ export component MainWindow inherits Window {
                     color: st.id == S.page ? #ffffff : #94a3b8;
                     font-weight: st.id == S.page ? 700 : 400;
                     wrap: word-wrap;
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { S.go-step(st.id); }
+                    }
                 }
                 Rectangle { vertical-stretch: 1; }
                 HorizontalLayout {
@@ -719,8 +788,8 @@ export component MainWindow inherits Window {
             if S.page == "connect": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; ConnectPage {} } }
             if S.page == "manage": ManagePage { vertical-stretch: 1; }
             if S.page != "welcome" && S.page != "progress" && S.page != "manage": Rectangle { vertical-stretch: 1; }
-            if S.error != "": Text { text: S.error; color: #dc2626; wrap: word-wrap; }
-            if S.info != "": Text { text: S.info; wrap: word-wrap; opacity: 0.8; }
+            if S.error != "": Sel { text: S.error; color: #dc2626; }
+            if S.info != "": Sel { text: S.info; opacity: 0.8; }
             if S.page != "welcome" && S.page != "progress" && S.page != "manage" && S.page != "connect": HorizontalLayout {
                 spacing: 10px;
                 Button { text: Tr.t("‹ Назад", "‹ Back"); enabled: !S.busy; clicked => { S.back(); } }
@@ -749,7 +818,7 @@ export component MainWindow inherits Window {
                 padding: 20px;
                 spacing: 12px;
                 Text { text: Tr.t("Ключ сервера", "Server key"); font-size: 18px; font-weight: 700; color: #0f172a; }
-                Text { text: S.hk-text; wrap: word-wrap; color: #0f172a; }
+                Sel { text: S.hk-text; color: #0f172a; }
                 HorizontalLayout {
                     spacing: 10px;
                     alignment: end;
