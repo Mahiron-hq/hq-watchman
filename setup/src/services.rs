@@ -177,6 +177,7 @@ pub async fn github_create_app(
     org: bool,
     hook_url: &str,
     cancel: &Cancel,
+    on_open: impl FnOnce(String),
     done_text: &str,
 ) -> Result<CreatedApp> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
@@ -193,7 +194,9 @@ pub async fn github_create_app(
         html_escape(&target),
         html_escape(&manifest(login, hook_url, &redirect).to_string())
     ));
-    open::that(format!("http://127.0.0.1:{port}/")).context("cannot open the browser")?;
+    let local = format!("http://127.0.0.1:{port}/");
+    on_open(local.clone());
+    open::that(local).context("cannot open the browser")?;
     let deadline = tokio::time::Instant::now() + Duration::from_mins(15);
     loop {
         if cancelled(cancel) {

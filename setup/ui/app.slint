@@ -114,6 +114,8 @@ export global S {
     callback tg-cancel();
     callback gh-create();
     callback gh-install();
+    callback gh-reopen();
+    callback gh-cancel();
     callback st-check();
     callback st-key-check();
     callback game-search();
@@ -458,9 +460,11 @@ component GithubPage inherits VerticalLayout {
     HorizontalLayout {
         spacing: 10px;
         alignment: start;
-        Button { text: Tr.t("1. Создать GitHub App", "1. Create the GitHub App"); enabled: !S.busy && S.gh-app == ""; clicked => { S.gh-create(); } }
-        Button { text: Tr.t("2. Установить на аккаунт", "2. Install on the account"); enabled: !S.busy && S.gh-app != "" && !S.gh-installed; clicked => { S.gh-install(); } }
+        Button { text: Tr.t("1. Создать GitHub App", "1. Create the GitHub App"); enabled: !S.busy && !S.gh-waiting && S.gh-app == ""; clicked => { S.gh-create(); } }
+        Button { text: Tr.t("2. Установить на аккаунт", "2. Install on the account"); enabled: !S.busy && !S.gh-waiting && S.gh-app != "" && !S.gh-installed; clicked => { S.gh-install(); } }
         if S.gh-waiting: Spinner { indeterminate: true; width: 24px; height: 24px; }
+        if S.gh-waiting: Button { text: Tr.t("Открыть страницу снова", "Open the page again"); clicked => { S.gh-reopen(); } }
+        if S.gh-waiting: Button { text: Tr.t("Отмена", "Cancel"); clicked => { S.gh-cancel(); } }
     }
     Hint { text: Tr.t("Откроется браузер: нажмите «Create GitHub App», затем на шаге 2 выберите «All repositories» и «Install». Права только на чтение.", "A browser opens: press \"Create GitHub App\", then in step 2 choose \"All repositories\" and \"Install\". Read-only access."); }
     if S.gh-app != "": Ok { text: Tr.t("App создано: ", "App created: ") + S.gh-app; }
@@ -775,19 +779,18 @@ export component MainWindow inherits Window {
             padding: 24px;
             spacing: 12px;
             if S.page == "welcome": Welcome { vertical-stretch: 1; }
-            if S.page == "target": TargetPage {}
-            if S.page == "server": ServerPage {}
-            if S.page == "sources": SourcesPage {}
-            if S.page == "telegram": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; TelegramPage {} } }
-            if S.page == "github": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; GithubPage {} } }
-            if S.page == "steam": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; SteamPage {} } }
-            if S.page == "games": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; GamesPage {} } }
-            if S.page == "notify": NotifyPage {}
-            if S.page == "summary": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; SummaryPage {} } }
+            if S.page == "target": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; alignment: start; TargetPage {} } }
+            if S.page == "server": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; alignment: start; ServerPage {} } }
+            if S.page == "sources": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; alignment: start; SourcesPage {} } }
+            if S.page == "telegram": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; alignment: start; TelegramPage {} } }
+            if S.page == "github": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; alignment: start; GithubPage {} } }
+            if S.page == "steam": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; alignment: start; SteamPage {} } }
+            if S.page == "games": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; alignment: start; GamesPage {} } }
+            if S.page == "notify": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; alignment: start; NotifyPage {} } }
+            if S.page == "summary": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; alignment: start; SummaryPage {} } }
+            if S.page == "connect": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; alignment: start; ConnectPage {} } }
             if S.page == "progress": ProgressPage { vertical-stretch: 1; }
-            if S.page == "connect": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; ConnectPage {} } }
             if S.page == "manage": ManagePage { vertical-stretch: 1; }
-            if S.page != "welcome" && S.page != "progress" && S.page != "manage": Rectangle { vertical-stretch: 1; }
             if S.error != "": Sel { text: S.error; color: #dc2626; }
             if S.info != "": Sel { text: S.info; opacity: 0.8; }
             if S.page != "welcome" && S.page != "progress" && S.page != "manage" && S.page != "connect": HorizontalLayout {

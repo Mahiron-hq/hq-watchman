@@ -64,6 +64,7 @@ struct State {
     managed: Managed,
     update: Option<release::Source>,
     log: String,
+    reopen: Option<String>,
 }
 
 #[derive(Clone)]
@@ -118,6 +119,34 @@ impl Ctx {
                         }
                     }
                     s.set_error(err_text(&e).into());
+                }
+            });
+        });
+    }
+
+    /// Long wait for the user in the browser: no busy lock, can be cancelled.
+    fn wait<F, Fut>(&self, f: F)
+    where
+        F: FnOnce(Ctx) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        let c = self.clone();
+        self.ui(|ui| {
+            let s = ui.global::<S>();
+            s.set_gh_waiting(true);
+            s.set_error(SharedString::new());
+        });
+        self.rt.spawn(async move {
+            let result = f(c.clone()).await;
+            lock(&c.st).reopen = None;
+            c.ui(move |ui| {
+                let s = ui.global::<S>();
+                s.set_gh_waiting(false);
+                s.set_info(SharedString::new());
+                if let Err(e) = result {
+                    if e.to_string() != "cancelled" {
+                        s.set_error(err_text(&e).into());
+                    }
                 }
             });
         });
@@ -283,6 +312,9 @@ fn refresh_steps(ui: &MainWindow) {
 
 fn show(ui: &MainWindow, page: &str) {
     let s = ui.global::<S>();
+    if s.get_gh_waiting() || s.get_tg_waiting() {
+        s.invoke_gh_cancel();
+    }
     s.set_page(page.into());
     s.set_error(SharedString::new());
     s.set_info(SharedString::new());
@@ -845,7 +877,7 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
         }
         let cancel: services::Cancel = Arc::new(AtomicBool::new(false));
         lock(&cc.st).cancel = Arc::clone(&cancel);
-        cc.task(move |c| async move {
+        cc.wait(move |c| async move {
             let (user_id, login, org) = services::github_user(&login).await?;
             let path = plan::random_token(32);
             let hook = if webhook {
@@ -860,11 +892,13 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
                 )
                 .into(),
             );
+            let c2 = c.clone();
             let app = services::github_create_app(
                 &login,
                 org,
                 &hook,
                 &cancel,
+                move |url| lock(&c2.st).reopen = Some(url),
                 tr!(
                     "GitHub App создано. Вернитесь в HQ Watchman Setup.",
                     "GitHub App created. Return to HQ Watchman Setup."
@@ -909,14 +943,16 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
             return;
         };
         let s = ui.global::<S>();
-        let _ = open::that(format!(
-            "https://github.com/apps/{}/installations/new",
-            g.slug
-        ));
-        s.set_gh_waiting(true);
+        let _ = s;
+        let url = format!("https://github.com/apps/{}/installations/new", g.slug);
+        let _ = open::that(&url);
         let cancel: services::Cancel = Arc::new(AtomicBool::new(false));
-        lock(&cc.st).cancel = Arc::clone(&cancel);
-        cc.task(move |c| async move {
+        {
+            let mut st = lock(&cc.st);
+            st.cancel = Arc::clone(&cancel);
+            st.reopen = Some(url);
+        }
+        cc.wait(move |c| async move {
             c.info(
                 tr!(
                     "Ждём установки App на GitHub…",
@@ -925,17 +961,23 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
                 .into(),
             );
             let r = services::github_wait_install(g.app_id, &g.pem, g.user_id, &cancel).await;
-            let ok = r.is_ok();
-            c.ui(move |ui| {
-                let s = ui.global::<S>();
-                s.set_gh_waiting(false);
-                s.set_info(SharedString::new());
-                if ok {
-                    s.set_gh_installed(true);
-                }
-            });
+            if r.is_ok() {
+                c.ui(|ui| ui.global::<S>().set_gh_installed(true));
+            }
             r
         });
+    });
+
+    let cc = c.clone();
+    s.on_gh_reopen(move || {
+        if let Some(url) = lock(&cc.st).reopen.clone() {
+            let _ = open::that(url);
+        }
+    });
+
+    let cc = c.clone();
+    s.on_gh_cancel(move || {
+        lock(&cc.st).cancel.store(true, Ordering::Relaxed);
     });
 
     let w = ui.as_weak();
