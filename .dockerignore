@@ -1,0 +1,9 @@
+target
+fuzz
+.git
+.github
+data
+docs
+*.md
+.env
+.env.*

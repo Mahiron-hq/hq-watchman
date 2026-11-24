@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO guides (id, title, game, comment_count, missing_checks, last_full_read, baseline_done)\n             VALUES (?, ?, ?, ?, ?, ?, ?)\n             ON CONFLICT(id) DO UPDATE SET title = excluded.title, game = excluded.game,\n               comment_count = excluded.comment_count, missing_checks = excluded.missing_checks,\n               last_full_read = excluded.last_full_read, baseline_done = excluded.baseline_done",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "40c897f68a55710525b6315f6a5997b7c394cfe0b8eb5e392553399349c1b739"
+}

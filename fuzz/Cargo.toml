@@ -1,0 +1,51 @@
+[package]
+name = "hq-watchman-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.10"
+hq-watchman = { path = ".." }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "webhook_payload"
+path = "fuzz_targets/webhook_payload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "steam_html"
+path = "fuzz_targets/steam_html.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bbcode"
+path = "fuzz_targets/bbcode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "commands"
+path = "fuzz_targets/commands.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vdf"
+path = "fuzz_targets/vdf.rs"
+test = false
+doc = false
+bench = false

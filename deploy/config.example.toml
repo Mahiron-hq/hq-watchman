@@ -1,0 +1,85 @@
+# HQ Watchman config. Mounted read-only at /config/config.toml.
+# Secrets never go here: they are environment variables (see .env.example).
+# Unknown keys, wrong types and out-of-range values stop the bot with an error.
+
+# Required. IANA time zone of the admin, used for quiet hours and times in messages.
+timezone = "Europe/Moscow"
+
+[quiet_hours]
+# Messages arrive silently (no sound) inside this window. It may cross midnight.
+enabled = true
+start = "22:00"
+end = "08:00"
+
+[intervals]
+guides_minutes = 15            # 5..1440
+games_minutes = 15             # 5..1440
+github_reconcile_minutes = 60  # 10..1440
+
+[digest]
+# Events are collected for window_seconds after the first one.
+# More than `threshold` events in a window arrive as one message with a Markdown file.
+window_seconds = 20            # 1..600
+threshold = 5                  # 1..1000
+
+[games]
+# Steam AppIDs. Names are taken from Steam. Change here, then send /reload.
+appids = [572890, 2523120, 588430]
+# Only official developer news feeds count.
+news_feeds = ["steam_community_announcements"]
+# A public build and a patch note within this window arrive as one thread.
+merge_window_minutes = 120     # 0..1440, 0 turns gluing off
+
+[strangers]
+# One reply per stranger per interval, and at most replies_per_hour in total.
+reply_interval_hours = 24
+replies_per_hour = 30
+retention_days = 30
+phrases = [
+    "Извините, я разговариваю только с хозяином. Заходите завтра, может быть, я снова промолчу вам это.",
+    "Вы не мой хозяин. Я проверил дважды. И ещё раз на всякий случай.",
+    "Доступ запрещён. Уровень ваших прав: «прохожий».",
+    "Я верный бот одного человека. Предложения о смене хозяина не рассматриваю.",
+    "Ваше сообщение очень важно для нас. Нет, не важно. Я служу только хозяину.",
+    "Мой хозяин запретил мне разговаривать с незнакомцами. И со знакомцами тоже.",
+    "*делает вид, что не заметил сообщение*",
+    "Я на службе у одного человека, и это не вы. Попробуйте завести своего бота.",
+    "Ошибка 403: хозяин не обнаружен. Обработка запроса отложена до тепловой смерти Вселенной.",
+    "Я сторожевой бот. Сторожу уведомления для хозяина. Вас в списке нет.",
+]
+
+[github]
+# Bot accounts whose events should still be shown, e.g. ["renovate[bot]"].
+bot_allowlist = []
+notify_edits = true
+notify_deletes = true
+
+[webhook]
+listen = "0.0.0.0:8080"
+# Required. One random segment, 16-128 chars of [A-Za-z0-9_-]. The URL is https://<host>/<path>.
+path = "replace-with-a-long-random-segment"
+max_body_bytes = 5242880
+# Accept webhooks only from GitHub hook ranges (https://api.github.com/meta).
+ip_filter = true
+# Proxies whose X-Forwarded-For / X-Real-IP headers are trusted (address or CIDR).
+trusted_proxies = []
+max_connections = 64
+requests_per_minute = 120
+
+# Built-in TLS for setups without a reverse proxy. Files are re-read when they change.
+# [webhook.tls]
+# cert_file = "/certs/fullchain.pem"
+# key_file = "/certs/privkey.pem"
+
+[health]
+# Loopback only, used by the `healthcheck` command inside the container.
+listen = "127.0.0.1:9091"
+
+[logging]
+level = "info"    # error, warn, info, debug, trace
+format = "text"   # text or json
+
+[storage]
+path = "/data/hq-watchman.db"
+retention_days = 90   # delivered events and webhook ids
+backups = 7           # daily snapshots kept next to the database

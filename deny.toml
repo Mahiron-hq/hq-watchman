@@ -1,0 +1,46 @@
+[graph]
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-gnu"]
+all-features = true
+exclude-dev = true
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    "GPL-3.0-or-later",
+]
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+skip = [
+    { crate = "base64@0.22.1", reason = "sqlx-core uses 0.22, hyper-util and reqwest use 0.23" },
+    { crate = "getrandom@0.2.17", reason = "ring uses 0.2, rand 0.10 uses 0.4" },
+    { crate = "hashbrown@0.16.1", reason = "hashlink in sqlx-core lags behind indexmap" },
+    { crate = "syn@2.0.119", reason = "proc macros are moving from syn 2 to syn 3" },
+]
+deny = [
+    { name = "openssl" },
+    { name = "openssl-sys" },
+    { name = "native-tls" },
+    { name = "aws-lc-rs" },
+    { name = "aws-lc-sys" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

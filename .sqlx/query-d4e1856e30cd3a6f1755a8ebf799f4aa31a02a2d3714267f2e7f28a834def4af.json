@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT gid FROM news_seen WHERE appid = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "gid",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "news_seen",
+            "name": "gid"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d4e1856e30cd3a6f1755a8ebf799f4aa31a02a2d3714267f2e7f28a834def4af"
+}

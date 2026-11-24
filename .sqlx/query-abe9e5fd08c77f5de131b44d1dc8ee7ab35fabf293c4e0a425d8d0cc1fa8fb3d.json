@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT status, message_id FROM outbox WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "status",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "name": "message_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "message_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "abe9e5fd08c77f5de131b44d1dc8ee7ab35fabf293c4e0a425d8d0cc1fa8fb3d"
+}

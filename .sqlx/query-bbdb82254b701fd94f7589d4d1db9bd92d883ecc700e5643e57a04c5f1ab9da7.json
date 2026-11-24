@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE outbox SET status = 2 WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "bbdb82254b701fd94f7589d4d1db9bd92d883ecc700e5643e57a04c5f1ab9da7"
+}

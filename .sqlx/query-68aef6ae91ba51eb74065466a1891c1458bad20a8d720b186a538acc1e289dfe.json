@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO redeliveries (guid, requested_at, attempts) VALUES (?, ?, 1)\n             ON CONFLICT(guid) DO UPDATE SET requested_at = excluded.requested_at, attempts = attempts + 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "68aef6ae91ba51eb74065466a1891c1458bad20a8d720b186a538acc1e289dfe"
+}

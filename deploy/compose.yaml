@@ -1,0 +1,44 @@
+name: hq-watchman
+
+services:
+  hq-watchman:
+    image: hq-watchman:0.1.0
+    container_name: hq-watchman
+    restart: unless-stopped
+    env_file:
+      - path: ./.env
+        required: true
+    volumes:
+      - data:/data
+      - ./config.toml:/config/config.toml:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - hqw
+    user: "65532:65532"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 64
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+networks:
+  hqw:
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
+          gateway: 172.31.250.1
+
+volumes:
+  data: {}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO games (appid, name, state, updated_at) VALUES (?, ?, ?, ?)\n             ON CONFLICT(appid) DO UPDATE SET name = excluded.name, state = excluded.state, updated_at = excluded.updated_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "eef63d548c14169119eea56794bd210807f24f6b3f41ca4cfd176593f7c93afd"
+}

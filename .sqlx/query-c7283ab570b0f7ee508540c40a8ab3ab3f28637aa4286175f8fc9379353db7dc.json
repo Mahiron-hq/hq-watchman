@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, account_login, suspended FROM installations ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "installations",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "account_login",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "installations",
+            "name": "account_login"
+          }
+        }
+      },
+      {
+        "name": "suspended",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "installations",
+            "name": "suspended"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c7283ab570b0f7ee508540c40a8ab3ab3f28637aa4286175f8fc9379353db7dc"
+}

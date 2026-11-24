@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO installations (id, account_login, suspended) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "c4f71ba2010cda63b96124413db576b6d639445c179b2c80631b4f23b7691427"
+}

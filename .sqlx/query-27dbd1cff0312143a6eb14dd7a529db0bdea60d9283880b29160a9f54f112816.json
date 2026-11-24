@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE outbox SET reply_to = NULL WHERE reply_to IN (SELECT id FROM outbox WHERE status <> 0 AND created_at < ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "27dbd1cff0312143a6eb14dd7a529db0bdea60d9283880b29160a9f54f112816"
+}

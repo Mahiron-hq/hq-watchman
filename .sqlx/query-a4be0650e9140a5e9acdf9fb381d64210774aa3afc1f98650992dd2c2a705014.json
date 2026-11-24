@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO strangers (user_id, username, attempts, last_at, last_reply_at) VALUES (?, ?, 1, ?, ?)\n             ON CONFLICT(user_id) DO UPDATE SET username = excluded.username, attempts = attempts + 1,\n               last_at = excluded.last_at, last_reply_at = COALESCE(excluded.last_reply_at, last_reply_at)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "a4be0650e9140a5e9acdf9fb381d64210774aa3afc1f98650992dd2c2a705014"
+}

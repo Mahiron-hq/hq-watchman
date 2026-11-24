@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM redeliveries WHERE requested_at < ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "5102f0f2cd11e3e88693eea914583c26f790369813ff11d7dce3543bc1262c58"
+}

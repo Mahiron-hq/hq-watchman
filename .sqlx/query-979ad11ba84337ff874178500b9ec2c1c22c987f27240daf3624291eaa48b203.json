@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, full_name, private, installation_id FROM repos ORDER BY full_name",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "repos",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "full_name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "repos",
+            "name": "full_name"
+          }
+        }
+      },
+      {
+        "name": "private",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "repos",
+            "name": "private"
+          }
+        }
+      },
+      {
+        "name": "installation_id",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "repos",
+            "name": "installation_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "979ad11ba84337ff874178500b9ec2c1c22c987f27240daf3624291eaa48b203"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM installations",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "e5fc1e84494aac5319ea79d44f82f6c3f78325f7978c99c343844bbc0f9b7be2"
+}

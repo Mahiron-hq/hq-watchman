@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM news_seen WHERE appid = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "41c300224f37d4d5b957a11f9075f25b86491fca3e9388f8a197dd9c3a8bac4a"
+}

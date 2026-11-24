@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT user_id, username, attempts, last_at, last_reply_at FROM strangers WHERE last_at >= ? ORDER BY last_at DESC LIMIT 100",
+  "describe": {
+    "columns": [
+      {
+        "name": "user_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "strangers",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "name": "username",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "strangers",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "name": "attempts",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "strangers",
+            "name": "attempts"
+          }
+        }
+      },
+      {
+        "name": "last_at",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "strangers",
+            "name": "last_at"
+          }
+        }
+      },
+      {
+        "name": "last_reply_at",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "strangers",
+            "name": "last_reply_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "e5f48186ce09c51d91b1f22158a44eff2b293b473d14f75a07d9702d097fcd73"
+}

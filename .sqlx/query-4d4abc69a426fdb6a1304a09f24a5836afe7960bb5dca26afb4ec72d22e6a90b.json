@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM strangers WHERE last_at < ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "4d4abc69a426fdb6a1304a09f24a5836afe7960bb5dca26afb4ec72d22e6a90b"
+}

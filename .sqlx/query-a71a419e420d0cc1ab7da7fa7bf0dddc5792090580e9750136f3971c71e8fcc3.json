@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO guide_comments (guide_id, comment_id, author, author_url, author_steamid, posted_at, text, missing_reads)\n                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)\n                 ON CONFLICT(guide_id, comment_id) DO UPDATE SET author = excluded.author, author_url = excluded.author_url,\n                   author_steamid = excluded.author_steamid, posted_at = excluded.posted_at, text = excluded.text,\n                   missing_reads = excluded.missing_reads",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "a71a419e420d0cc1ab7da7fa7bf0dddc5792090580e9750136f3971c71e8fcc3"
+}

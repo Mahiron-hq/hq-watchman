@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM guide_comments WHERE guide_id = ? AND comment_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "eadf1ab801f64c26fc1f037917264706052fc9b7f51db27b9bd39cd3c128031d"
+}

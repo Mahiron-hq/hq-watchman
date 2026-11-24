@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT requested_at, attempts FROM redeliveries WHERE guid = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "requested_at",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "redeliveries",
+            "name": "requested_at"
+          }
+        }
+      },
+      {
+        "name": "attempts",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "redeliveries",
+            "name": "attempts"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "07c8fb70e6238791b2aeda586813506a88008621921e698ed6e61cd6f6246234"
+}

@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT comment_id, author, author_url, author_steamid, posted_at, text, missing_reads\n             FROM guide_comments WHERE guide_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "comment_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "guide_comments",
+            "name": "comment_id"
+          }
+        }
+      },
+      {
+        "name": "author",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "guide_comments",
+            "name": "author"
+          }
+        }
+      },
+      {
+        "name": "author_url",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "guide_comments",
+            "name": "author_url"
+          }
+        }
+      },
+      {
+        "name": "author_steamid",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "guide_comments",
+            "name": "author_steamid"
+          }
+        }
+      },
+      {
+        "name": "posted_at",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "guide_comments",
+            "name": "posted_at"
+          }
+        }
+      },
+      {
+        "name": "text",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "guide_comments",
+            "name": "text"
+          }
+        }
+      },
+      {
+        "name": "missing_reads",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "guide_comments",
+            "name": "missing_reads"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2fbe02a25c96c74492d0f10e9cb3d483c05ebbc4158dcfeb37f576036da53359"
+}

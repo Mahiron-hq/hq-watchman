@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT appid FROM games",
+  "describe": {
+    "columns": [
+      {
+        "name": "appid",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "games",
+            "name": "appid"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4fdd16096044122c18c34ec1641479ce75f8a256c9fcfb6cb077cb88776eccdb"
+}
