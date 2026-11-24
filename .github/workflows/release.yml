@@ -182,16 +182,18 @@ jobs:
       - name: Checksums and signature
         env:
           MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+          V: ${{ steps.v.outputs.version }}
         run: |
           set -euo pipefail
           sudo apt-get install -y -qq minisign >/dev/null
+          pip install -q cryptography==46.0.3
           cd out
           sha256sum * > SHA256SUMS.txt
           umask 077
           printf '%s\n' "$MINISIGN_KEY" > ../minisign.key
-          minisign -S -s ../minisign.key -m SHA256SUMS.txt -t "HQ Watchman ${{ steps.v.outputs.version }}" < /dev/null
+          python ../scripts/minisign.py sign ../minisign.key SHA256SUMS.txt "HQ Watchman $V"
           rm -f ../minisign.key
-          minisign -V -P "$(tail -n1 ../minisign.pub)" -m SHA256SUMS.txt
+          minisign -V -p ../minisign.pub -m SHA256SUMS.txt
           cat SHA256SUMS.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

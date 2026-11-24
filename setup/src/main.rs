@@ -1872,3 +1872,88 @@ fn main() -> Result<()> {
 fn sys_locale_ru() -> bool {
     sys_locale::get_locale().is_some_and(|l| l.to_lowercase().starts_with("ru"))
 }
+
+/// Full run against a real server: `cargo test e2e -- --ignored` with `HQW_E2E_*` variables.
+#[cfg(test)]
+mod e2e {
+    use super::*;
+
+    fn var(n: &str) -> String {
+        std::env::var(n).unwrap_or_default()
+    }
+
+    async fn run(target: Target) -> Result<()> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let t = ssh::Target {
+            host: var("HQW_E2E_HOST"),
+            port: var("HQW_E2E_PORT").parse().unwrap_or(22),
+            user: var("HQW_E2E_USER"),
+            auth: ssh::Auth::Password(Zeroizing::new(var("HQW_E2E_PASSWORD"))),
+            sudo_password: None,
+        };
+        let pinned = store::host_key(&store::load(), &t.host, t.port);
+        let session = Session::connect(&t, pinned).await?;
+        session.check_root().await?;
+        let info = deploy::inspect(&session).await?;
+        deploy::supported(&info)?;
+        let log: Log = Arc::new(|l| eprintln!("{l}"));
+        let bundle = release::Bundle::open(release::folder(var("HQW_E2E_FILES").into())).await?;
+        let (profile, _) = services::steam_profile(&var("HQW_E2E_STEAM")).await?;
+        let plan = Plan {
+            target,
+            language: Lang::En,
+            github_on: false,
+            guides_on: true,
+            games_on: true,
+            telegram_token: Zeroizing::new(var("HQW_E2E_TOKEN")),
+            telegram_admin: var("HQW_E2E_ADMIN").parse().unwrap_or(0),
+            github: None,
+            steam_profile: Some(profile),
+            steam_key: None,
+            games: vec![Game::new(572_890, "")],
+            timezone: "Europe/Moscow".into(),
+            quiet_enabled: false,
+            quiet_start: "22:00".into(),
+            quiet_end: "08:00".into(),
+            proxy: None,
+        };
+        plan.validate()?;
+        match target {
+            Target::Docker => deploy::install_docker(&session, &info, &plan, &bundle, &log).await?,
+            _ => deploy::install_systemd(&session, &info, &plan, &bundle, &log).await?,
+        }
+        let info = deploy::inspect(&session).await?;
+        let st = deploy::status(&session, target).await?;
+        eprintln!("status: {} {}", st.state, st.version);
+        let v = deploy::settings_get(&session, target).await?;
+        let mut s: Settings = serde_json::from_value(v["settings"].clone())?;
+        assert_eq!(s.language, Lang::En);
+        s.games.list.push(Game::new(570, "Dota 2"));
+        deploy::settings_set(&session, target, &s).await?;
+        tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+        let logs = deploy::logs(&session, target, 50).await?;
+        assert!(logs.contains("settings changed outside the bot"), "{logs}");
+        let db = deploy::backup(&session, target).await?;
+        assert!(db.starts_with(b"SQLite format 3"));
+        deploy::restore(&session, target, &db, &log).await?;
+        deploy::update(&session, &info, target, &bundle, &log).await?;
+        deploy::uninstall(&session, target, false, &log).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a test server"]
+    async fn e2e_docker() {
+        if let Err(e) = run(Target::Docker).await {
+            panic!("{e:#}");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a test server"]
+    async fn e2e_systemd() {
+        if let Err(e) = run(Target::Systemd).await {
+            panic!("{e:#}");
+        }
+    }
+}

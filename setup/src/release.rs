@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 pub const REPO: &str = "Mahiron-hq/hq-watchman";
 /// minisign public key of the release signing key.
-pub const PUBLIC_KEY: &str = "RWR+IQT3JHEN8eZDTREAqgUt9FV4bAY/1fqXWXRjHHX3RCx9ptoXIfMc";
+pub const PUBLIC_KEY: &str = "RWRh/ArZd0sNbyZPIKim+NSoQfeD97vdcfgJB4GQGpeZ8fIl4yWIrryu";
 const SUMS: &str = "SHA256SUMS.txt";
 const MAX_ASSET: usize = 200 * 1024 * 1024;
 

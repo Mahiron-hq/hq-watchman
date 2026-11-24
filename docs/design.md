@@ -6,18 +6,25 @@ One async process (tokio). Sources write normalized events (`src/event.rs`) into
 
 | Module | Role |
 |---|---|
-| `config.rs` | Config file (strict TOML) and environment secrets |
+| `config.rs` | Config file (strict TOML) and environment or file secrets, each source optional |
+| `settings.rs` | User settings in the database, event filter and routing to chats |
+| `i18n.rs` | Russian and English texts (`tr!`, `trf!`) |
 | `github/webhook.rs` | Webhook endpoint: limits, IP filter, HMAC before parsing, idempotent storage |
 | `github/payload.rs` | Webhook payloads into events, filters (own actions, bots, foreign installations) |
 | `github/mod.rs`, `reconcile.rs` | App JWT, installation tokens, repositories, redelivery of failed deliveries |
+| `github/poll.rs` | Polling mode: payloads read from the App delivery log |
 | `steam/guides.rs`, `comments.rs` | Guide list (Web API, profile page as fallback), full comment snapshots, HTML parsers |
 | `steam/games.rs`, `cm.rs`, `vdf.rs`, `bbcode.rs` | Builds, branches and DLC from PICS, news and patch notes |
 | `storage.rs` | Schema, migrations, queue, snapshots, cleanup, backups |
 | `telegram/sender.rs`, `render.rs` | Queue, digest, quiet hours, pause, limits, HTML and Markdown views |
-| `telegram/commands.rs` | Long polling, admin commands, groups, strangers |
+| `telegram/commands.rs` | Long polling, admin commands, groups and channels, strangers |
+| `telegram/menu.rs` | `/settings` screens and toggles |
+| `steam/store.rs` | Store search and names for adding games |
 | `health.rs`, `app.rs` | Source health and alerts, task supervision, maintenance, startup |
 
 A new source is a new module that produces `Event` values.
+
+`setup/` is a separate crate, the desktop app HQ Watchman Setup (Slint UI, russh for SSH). It uses the bot crate as a library for the settings types, validation and online checks, so both always agree on formats.
 
 ## Decisions
 
@@ -37,9 +44,20 @@ A new source is a new module that produces `Event` values.
 
 **Deleted Steam comments** need two complete reads in a row without the comment. A read is complete only when the number of parsed comments equals the count Steam reports; anything else is treated as a parser or network problem, never as deletions.
 
+**Settings in the database.** Everything the owner changes often (sources, event types, games, chats, quiet hours, time zone, language) is one JSON document in the `meta` table, edited by `/settings` or by `hq-watchman settings set` (the setup app). The running bot picks up outside changes within 5 seconds. `config.toml` keeps infrastructure only; its old keys (`timezone`, `[quiet_hours]`, `[games] appids`, `notify_*`) seed the settings once. Filtering happens when an event is queued, so a disabled type is never stored; turning a Steam source off forgets its snapshot, and turning it on starts from a silent baseline.
+
+**Routing.** An event is queued once per recipient chat (admin, groups, channels); the dedup key gets the chat ID as suffix. Service messages go only to the admin. A chat that blocks the bot loses its queue; a group that becomes a supergroup is followed.
+
+**GitHub polling mode.** The App webhook points to an address that never answers, so every delivery fails and stays in the App delivery log with its payload for 3 days. The bot reads new entries once a minute and passes the payload through the same parser as the webhook. No domain, certificate or open port is needed; events arrive within a minute.
+
+**Windows target.** The bot runs as a Task Scheduler task under `LOCAL SERVICE`, started at boot and restarted on failure, instead of a Windows service: a service needs `unsafe` FFI glue, and the crate forbids `unsafe`.
+
+**Releases** are signed: `SHA256SUMS.txt` carries a minisign signature (public key in `minisign.pub` and in the setup app). The setup app refuses files whose signature or checksum does not match.
+
 ## Known limits
 
 - A Steam comment written and deleted between two checks is not seen.
 - Comment pages of Steam are scraped; a markup change breaks the parser (the bot reports it after 3 failed checks).
 - GitHub keeps webhook deliveries for 3 days; events older than that during downtime are lost (the bot reports the period).
 - `/proc/self/environ` of the process still shows the environment it was started with; removing variables only hides them from child processes and from later reads.
+- In polling mode GitHub events arrive with up to a minute of delay; if GitHub ever stops logging failed deliveries for an App, the mode stops working (the bot reports it as a source failure).
