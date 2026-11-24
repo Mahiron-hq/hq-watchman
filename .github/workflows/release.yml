@@ -3,7 +3,6 @@ name: Release
 on:
   push:
     tags: ["v*"]
-    branches: ["setup-app"]
   workflow_dispatch:
 
 permissions:

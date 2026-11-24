@@ -2162,6 +2162,59 @@ mod e2e {
         Ok(())
     }
 
+    async fn run_windows() -> Result<()> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let log: Log = Arc::new(|l| eprintln!("{l}"));
+        let bundle = release::Bundle::open(release::folder(var("HQW_E2E_FILES").into())).await?;
+        let plan = Plan {
+            target: Target::Windows,
+            language: Lang::Ru,
+            github_on: false,
+            guides_on: false,
+            games_on: true,
+            telegram_token: Zeroizing::new(var("HQW_E2E_TOKEN")),
+            telegram_admin: var("HQW_E2E_ADMIN").parse().unwrap_or(0),
+            github: None,
+            steam_profile: None,
+            steam_key: None,
+            games: vec![Game::new(572_890, "")],
+            timezone: "Europe/Moscow".into(),
+            quiet_enabled: false,
+            quiet_start: "22:00".into(),
+            quiet_end: "08:00".into(),
+            proxy: None,
+        };
+        plan.validate()?;
+        local::install(&plan, &bundle, &log).await?;
+        eprintln!("version: {}", local::version());
+        let v = tokio::task::spawn_blocking(local::settings_get).await??;
+        let mut s: Settings = serde_json::from_value(v["settings"].clone())?;
+        s.games.list.push(Game::new(570, "Dota 2"));
+        let s2 = s.clone();
+        tokio::task::spawn_blocking(move || local::settings_set(&s2)).await??;
+        tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+        let logs = local::logs(80);
+        assert!(logs.contains("settings changed outside the bot"), "{logs}");
+        let db = tokio::task::spawn_blocking(local::backup).await??;
+        assert!(db.starts_with(b"SQLite format 3"));
+        tokio::task::spawn_blocking(move || local::restore(&db)).await??;
+        local::wait_healthy(&log).await?;
+        tokio::task::spawn_blocking(local::restart).await??;
+        local::wait_healthy(&log).await?;
+        local::update(&bundle, &log).await?;
+        tokio::task::spawn_blocking(|| local::uninstall(false)).await??;
+        assert!(!local::installed());
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "installs on this computer"]
+    async fn e2e_windows() {
+        if let Err(e) = run_windows().await {
+            panic!("{e:#}");
+        }
+    }
+
     #[tokio::test]
     #[ignore = "needs a test server"]
     async fn e2e_docker() {
