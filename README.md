@@ -91,7 +91,7 @@ Manual installation on a Linux server with Docker: [docs/install.en.md](docs/ins
 | `/sources` | Watched repositories, guides, games with branches and DLC |
 | `/pause [2h]` | Pause notifications, forever or for a time (`30m`, `2h`, `1d`, `1w`) |
 | `/resume` | Resume; collected events arrive, as a digest if there are many |
-| `/check_now [github\|guides\|games]` | Check now, at most once a minute per source |
+| `/check_now [github\|guides\|games]` | Check now, at most once a minute per source; the result arrives as a message |
 | `/reload` | Re-read the config file without a restart |
 | `/strangers` | Who else tried to write to the bot in the last 7 days |
 
@@ -183,7 +183,7 @@ HQ Watchman – Telegram-бот для одного человека, котор
 | `/sources` | Отслеживаемые репозитории, руководства, игры с ветками и DLC |
 | `/pause [2h]` | Пауза уведомлений, без срока или на время (`30m`, `2h`, `1d`, `1w`) |
 | `/resume` | Снять паузу; накопленное придёт, дайджестом, если событий много |
-| `/check_now [github\|guides\|games]` | Проверить сейчас, не чаще раза в минуту на источник |
+| `/check_now [github\|guides\|games]` | Проверить сейчас, не чаще раза в минуту на источник; итог приходит сообщением |
 | `/reload` | Перечитать конфиг без перезапуска |
 | `/strangers` | Кто ещё пытался писать боту за 7 дней |
 

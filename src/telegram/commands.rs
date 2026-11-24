@@ -762,26 +762,43 @@ impl Poller {
         let now = crate::now();
         let mut started = Vec::new();
         let mut skipped = Vec::new();
+        let mut not_configured = Vec::new();
         for t in targets {
-            let (key, name, notify) = match t {
-                Target::Github => ("github", "GitHub", &self.app.check_now.github),
+            let c = &self.app.check_now;
+            let (key, name, notify, report, configured) = match t {
+                Target::Github => (
+                    "github",
+                    "GitHub",
+                    &c.github,
+                    &c.report_github,
+                    self.app.github.is_some(),
+                ),
                 Target::Guides => (
                     "guides",
                     crate::tr!("руководства", "guides"),
-                    &self.app.check_now.guides,
+                    &c.guides,
+                    &c.report_guides,
+                    self.app.secrets.steam_profile_id.is_some(),
                 ),
                 Target::Games => (
                     "games",
                     crate::tr!("игры", "games"),
-                    &self.app.check_now.games,
+                    &c.games,
+                    &c.report_games,
+                    true,
                 ),
             };
+            if !configured {
+                not_configured.push(name);
+                continue;
+            }
             let last = self.last_check.get(key).copied().unwrap_or(0);
             if now - last < 60 {
                 skipped.push(name);
                 continue;
             }
             self.last_check.insert(key, now);
+            report.store(true, std::sync::atomic::Ordering::SeqCst);
             notify.notify_one();
             started.push(name);
         }
@@ -789,8 +806,8 @@ impl Poller {
         if !started.is_empty() {
             let list = started.join(", ");
             s.push_str(&crate::trf!(
-                "Проверка запущена: {list}.",
-                "Check started: {list}."
+                "Проверка запущена: {list}. Итог придёт отдельным сообщением.",
+                "Check started: {list}. The result arrives in a separate message."
             ));
         }
         if !skipped.is_empty() {
@@ -801,6 +818,16 @@ impl Poller {
             s.push_str(&crate::trf!(
                 "Не чаще раза в минуту, пропущено: {list}.",
                 "At most once a minute, skipped: {list}."
+            ));
+        }
+        if !not_configured.is_empty() {
+            let list = not_configured.join(", ");
+            if !s.is_empty() {
+                s.push('\n');
+            }
+            s.push_str(&crate::trf!(
+                "Не настроено на этой установке: {list}.",
+                "Not configured on this installation: {list}."
             ));
         }
         s

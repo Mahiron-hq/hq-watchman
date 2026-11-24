@@ -255,8 +255,19 @@ pub async fn run_once(app: &App) {
 /// Runs at start, on schedule and on `/check_now github`.
 pub async fn run(app: Arc<App>) -> Result<()> {
     loop {
+        let report = crate::app::CheckReport::start(
+            &app,
+            &app.check_now.report_github,
+            "GitHub",
+            Source::Github,
+            &["github", "deliveries"],
+        )
+        .await;
         if crate::settings::current().github.enabled {
             run_once(&app).await;
+        }
+        if let Some(r) = report {
+            r.finish(&app).await;
         }
         let minutes = app.cfg().intervals.github_reconcile_minutes;
         app.health

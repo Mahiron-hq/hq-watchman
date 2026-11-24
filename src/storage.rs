@@ -311,6 +311,24 @@ impl Db {
         Ok(r.rows_affected())
     }
 
+    pub async fn max_outbox_id(&self) -> Result<i64> {
+        let id: Option<i64> = sqlx::query_scalar("SELECT MAX(id) FROM outbox")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(id.unwrap_or(0))
+    }
+
+    /// Events of a source queued for the admin after the given row.
+    pub async fn count_events_since(&self, after_id: i64, source: &str) -> Result<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT COUNT(*) FROM outbox WHERE id > ? AND source = ? AND kind = 0 AND chat_id IS NULL",
+        )
+        .bind(after_id)
+        .bind(source)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     /// Drops everything still queued for a chat the bot no longer serves.
     pub async fn drop_chat(&self, chat: i64) -> Result<()> {
         sqlx::query!(
@@ -1024,6 +1042,22 @@ mod tests {
         assert_eq!(chats, vec![None, Some(-77)]);
         db.drop_chat(-77).await.unwrap();
         assert_eq!(db.pending_count().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn counts_new_events_after_a_mark() {
+        watch_test_games();
+        let db = Db::memory().await.unwrap();
+        db.enqueue(&Event::service("s0", "t", "x")).await.unwrap();
+        let mark = db.max_outbox_id().await.unwrap();
+        db.enqueue_all(&[build_event(10, "c1"), build_event(11, "c2")], 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.count_events_since(mark, "steam_update").await.unwrap(),
+            2
+        );
+        assert_eq!(db.count_events_since(mark, "github").await.unwrap(), 0);
     }
 
     #[tokio::test]

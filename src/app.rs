@@ -31,6 +31,89 @@ pub struct CheckNow {
     pub github: Notify,
     pub guides: Notify,
     pub games: Notify,
+    /// Set by `/check_now`: the next pass of that source reports its result.
+    pub report_github: std::sync::atomic::AtomicBool,
+    pub report_guides: std::sync::atomic::AtomicBool,
+    pub report_games: std::sync::atomic::AtomicBool,
+}
+
+/// Result message of a check the admin asked for.
+pub struct CheckReport {
+    title: &'static str,
+    source: crate::event::Source,
+    health: &'static [&'static str],
+    mark: i64,
+    started: i64,
+}
+
+impl CheckReport {
+    pub async fn start(
+        app: &App,
+        flag: &std::sync::atomic::AtomicBool,
+        title: &'static str,
+        source: crate::event::Source,
+        health: &'static [&'static str],
+    ) -> Option<Self> {
+        if !flag.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
+        let mark = app.db.max_outbox_id().await.unwrap_or(0);
+        Some(Self {
+            title,
+            source,
+            health,
+            mark,
+            started: crate::now(),
+        })
+    }
+
+    pub async fn finish(self, app: &App) {
+        let title = escape_html(self.title);
+        let text = if crate::settings::current().source_on(self.source) {
+            let n = app
+                .db
+                .count_events_since(self.mark, self.source.as_str())
+                .await
+                .unwrap_or(0);
+            let snap = app.health.snapshot();
+            let errors: Vec<String> = self
+                .health
+                .iter()
+                .filter_map(|h| {
+                    let (t, e) = snap.get(h)?.last_error.as_ref()?;
+                    (*t >= self.started).then(|| {
+                        format!(
+                            "{}: {}",
+                            escape_html(crate::health::title(h)),
+                            crate::text::external_html(&crate::text::truncate_chars(e, 300))
+                        )
+                    })
+                })
+                .collect();
+            if errors.is_empty() {
+                crate::trf!(
+                    "<b>{title}</b>: проверка завершена, новых событий: {n}.",
+                    "<b>{title}</b>: check finished, new events: {n}."
+                )
+            } else {
+                let list = errors.join("\n");
+                crate::trf!(
+                    "<b>{title}</b>: проверка завершена с ошибками, новых событий: {n}.\n{list}",
+                    "<b>{title}</b>: check finished with errors, new events: {n}.\n{list}"
+                )
+            }
+        } else {
+            crate::trf!(
+                "<b>{title}</b>: источник выключен в /settings, проверка не выполнялась.",
+                "<b>{title}</b>: the source is off in /settings, nothing was checked."
+            )
+        };
+        let key = format!("check:{}:{}", self.source.as_str(), self.started);
+        if let Err(e) = app.db.enqueue_reply(&key, &text).await {
+            tracing::warn!(error = %e, "check report not queued");
+        }
+        app.outbox_signal.notify_one();
+    }
 }
 
 pub struct App {
@@ -281,6 +364,14 @@ async fn guides_loop(app: Arc<App>) -> Result<()> {
         steam: Arc::clone(&app.steam),
     };
     loop {
+        let report = CheckReport::start(
+            &app,
+            &app.check_now.report_guides,
+            crate::tr!("Руководства Steam", "Steam guides"),
+            crate::event::Source::SteamGuide,
+            &["guides", "guides_parser"],
+        )
+        .await;
         if crate::settings::current().guides.enabled {
             if let Err(e) = poller.poll(&app.db, &app.health).await {
                 app.health
@@ -293,6 +384,9 @@ async fn guides_loop(app: Arc<App>) -> Result<()> {
                     .await;
             }
             app.outbox_signal.notify_one();
+        }
+        if let Some(r) = report {
+            r.finish(&app).await;
         }
         let minutes = app.cfg().intervals.guides_minutes;
         app.health
@@ -333,6 +427,14 @@ async fn sync_game_names(app: &App) -> Result<()> {
 async fn games_loop(app: Arc<App>) -> Result<()> {
     let mut poller = GamesPoller::new();
     loop {
+        let report = CheckReport::start(
+            &app,
+            &app.check_now.report_games,
+            crate::tr!("Игры Steam", "Steam games"),
+            crate::event::Source::SteamUpdate,
+            &["games", "pics", "news"],
+        )
+        .await;
         let cfg = app.cfg();
         let s = crate::settings::current();
         if s.games.enabled && !s.games.list.is_empty() {
@@ -363,6 +465,9 @@ async fn games_loop(app: Arc<App>) -> Result<()> {
             app.outbox_signal.notify_one();
         } else if !s.games.enabled {
             app.db.forget_games_except(&[]).await?;
+        }
+        if let Some(r) = report {
+            r.finish(&app).await;
         }
         let minutes = cfg.intervals.games_minutes;
         app.health
