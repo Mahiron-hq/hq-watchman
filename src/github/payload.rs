@@ -129,7 +129,7 @@ pub struct PayloadError(String);
 
 fn login(u: Option<&User>) -> String {
     u.map_or_else(
-        || "неизвестный".to_owned(),
+        || crate::tr!("неизвестный", "unknown").to_owned(),
         |u| text::clean_line(&u.login, 60),
     )
 }
@@ -191,12 +191,12 @@ pub fn parse(event: &str, body: &[u8], ctx: &Context<'_>) -> Result<Outcome, Pay
         out.installation_changed = true;
         let account = login(inst.account.as_ref());
         let (title, text) = match action {
-            "created" => ("GitHub App установлено", format!("App установлено на аккаунт {account}. Репозитории подключатся автоматически.")),
-            "deleted" => ("GitHub App удалено", format!("App удалено с аккаунта {account}. События GitHub больше не приходят. Установите App заново, если это ошибка.")),
-            "suspend" => ("GitHub App приостановлено", format!("Установка на аккаунте {account} приостановлена. События GitHub не приходят, пока установку не возобновят.")),
-            "unsuspend" => ("GitHub App возобновлено", format!("Установка на аккаунте {account} снова активна.")),
-            "new_permissions_accepted" => ("Права GitHub App изменены", format!("На аккаунте {account} приняты новые права App. Проверьте, что права только на чтение.")),
-            _ => ("Изменение установки GitHub App", format!("Действие {} на аккаунте {account}.", text::clean_line(action, 40))),
+            "created" => (crate::tr!("GitHub App установлено", "GitHub App installed"), crate::trf!("App установлено на аккаунт {account}. Репозитории подключатся автоматически.", "The App was installed on {account}. Repositories are added automatically.")),
+            "deleted" => (crate::tr!("GitHub App удалено", "GitHub App removed"), crate::trf!("App удалено с аккаунта {account}. События GitHub больше не приходят. Установите App заново, если это ошибка.", "The App was removed from {account}. GitHub events no longer arrive. Install the App again if this was a mistake.")),
+            "suspend" => (crate::tr!("GitHub App приостановлено", "GitHub App suspended"), crate::trf!("Установка на аккаунте {account} приостановлена. События GitHub не приходят, пока установку не возобновят.", "The installation on {account} is suspended. GitHub events do not arrive until it is resumed.")),
+            "unsuspend" => (crate::tr!("GitHub App возобновлено", "GitHub App resumed"), crate::trf!("Установка на аккаунте {account} снова активна.", "The installation on {account} is active again.")),
+            "new_permissions_accepted" => (crate::tr!("Права GitHub App изменены", "GitHub App permissions changed"), crate::trf!("На аккаунте {account} приняты новые права App. Проверьте, что права только на чтение.", "New App permissions were accepted on {account}. Check that they are read-only.")),
+            _ => (crate::tr!("Изменение установки GitHub App", "GitHub App installation changed"), crate::trf!("Действие {} на аккаунте {account}.", "Action {} on {account}.", text::clean_line(action, 40))),
         };
         if inst.account.as_ref().is_some_and(|a| a.id != ctx.admin_id) {
             out.ignored = Some("installation of another account");
@@ -253,9 +253,13 @@ pub fn parse(event: &str, body: &[u8], ctx: &Context<'_>) -> Result<Outcome, Pay
             out.repos_removed.push(id);
             out.events.push(Event::service(
                 format!("gh:repo:rm:{}:{}", r.id, crate::now()),
-                "Репозиторий снят с наблюдения",
-                format!(
+                crate::tr!(
+                    "Репозиторий снят с наблюдения",
+                    "Repository no longer watched"
+                ),
+                crate::trf!(
                     "Репозиторий {} больше не отслеживается (удалён из установки App).",
+                    "Repository {} is no longer watched (removed from the App installation).",
                     r.full_name
                 ),
             ));
@@ -491,10 +495,12 @@ pub fn parse(event: &str, body: &[u8], ctx: &Context<'_>) -> Result<Outcome, Pay
                 return Ok(out);
             }
             let state_ru = match state.to_ascii_lowercase().as_str() {
-                "approved" => "одобрено".to_owned(),
-                "changes_requested" => "запрошены изменения".to_owned(),
-                "commented" => "комментарий".to_owned(),
-                "dismissed" => "ревью отклонено".to_owned(),
+                "approved" => crate::tr!("одобрено", "approved").to_owned(),
+                "changes_requested" => {
+                    crate::tr!("запрошены изменения", "changes requested").to_owned()
+                }
+                "commented" => crate::tr!("комментарий", "commented").to_owned(),
+                "dismissed" => crate::tr!("ревью отклонено", "review dismissed").to_owned(),
                 other => text::clean_line(other, 40),
             };
             let suffix = if change == Change::Edited {

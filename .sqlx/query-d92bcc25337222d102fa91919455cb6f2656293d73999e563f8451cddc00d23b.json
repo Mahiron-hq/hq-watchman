@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM meta WHERE key = 'guides_baseline'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "d92bcc25337222d102fa91919455cb6f2656293d73999e563f8451cddc00d23b"
+}

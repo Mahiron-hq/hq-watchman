@@ -4,6 +4,7 @@ pub mod cm;
 pub mod comments;
 pub mod games;
 pub mod guides;
+pub mod store;
 pub mod vdf;
 
 use std::time::Duration;
@@ -35,7 +36,7 @@ pub fn store_url(appid: u32) -> String {
 /// Sequential, paced access to Steam web hosts with backoff on 429 and 5xx.
 pub struct SteamHttp {
     http: HttpClient,
-    key: SecretString,
+    key: Option<SecretString>,
     last: Mutex<Option<Instant>>,
 }
 
@@ -48,12 +49,16 @@ pub enum SteamError {
 }
 
 impl SteamHttp {
-    pub fn new(http: HttpClient, key: SecretString) -> Self {
+    pub fn new(http: HttpClient, key: Option<SecretString>) -> Self {
         Self {
             http,
             key,
             last: Mutex::new(None),
         }
+    }
+
+    pub fn has_key(&self) -> bool {
+        self.key.is_some()
     }
 
     pub fn http(&self) -> &HttpClient {
@@ -115,12 +120,15 @@ impl SteamHttp {
         with_key: bool,
     ) -> Result<T, SteamError> {
         let url = format!("https://api.steampowered.com/{path}");
+        if with_key && self.key.is_none() {
+            return Err(SteamError::BadKey);
+        }
         let body = self
             .run(
                 || {
                     let mut req = self.http.request(Method::GET, &url)?.query(query);
-                    if with_key {
-                        req = req.query(&[("key", self.key.expose_secret())]);
+                    if let (true, Some(key)) = (with_key, &self.key) {
+                        req = req.query(&[("key", key.expose_secret())]);
                     }
                     Ok(req)
                 },

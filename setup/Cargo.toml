@@ -1,0 +1,72 @@
+[package]
+name = "hq-watchman-setup"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+description = "Desktop app that installs, configures and updates HQ Watchman"
+authors = ["Lev Burmistrov (Mahiron-hq)"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Mahiron-hq/hq-watchman"
+publish = false
+build = "build.rs"
+
+[workspace]
+
+[[bin]]
+name = "hq-watchman-setup"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.105"
+base64 = "0.22.1"
+directories = "6.0.0"
+hq-watchman = { path = ".." }
+iana-time-zone = "0.1.65"
+jiff = { version = "1.0.3", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
+minisign-verify = "0.3.0"
+open = "5.4.5"
+rand = "0.10.4"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "query", "form"] }
+rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
+ring = "0.17.14"
+russh = { version = "0.65.4", default-features = false, features = ["ring", "rsa", "flate2"] }
+secrecy = "0.10.3"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+slint = "1.19.1"
+sys-locale = "0.3.2"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "fs"] }
+toml = { version = "1.2.2", default-features = false, features = ["parse", "display", "serde", "std"] }
+zeroize = "1.9.2"
+
+[build-dependencies]
+slint-build = "1.19.1"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1.34"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+too_many_lines = "allow"
+many_single_char_names = "allow"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"

@@ -34,9 +34,9 @@ impl Source {
     pub fn title(self) -> &'static str {
         match self {
             Self::Github => "GitHub",
-            Self::SteamGuide => "Руководства Steam",
-            Self::SteamUpdate => "Игры Steam",
-            Self::Bot => "Бот",
+            Self::SteamGuide => crate::tr!("Руководства Steam", "Steam guides"),
+            Self::SteamUpdate => crate::tr!("Игры Steam", "Steam games"),
+            Self::Bot => crate::tr!("Бот", "Bot"),
         }
     }
 }
@@ -52,9 +52,9 @@ pub enum Change {
 impl Change {
     pub fn word(self) -> &'static str {
         match self {
-            Self::New => "новый",
-            Self::Edited => "изменён",
-            Self::Deleted => "удалён",
+            Self::New => crate::tr!("новый", "new"),
+            Self::Edited => crate::tr!("изменён", "edited"),
+            Self::Deleted => crate::tr!("удалён", "deleted"),
         }
     }
 }
@@ -73,12 +73,15 @@ pub enum GhCommentKind {
 impl GhCommentKind {
     pub fn title(self) -> &'static str {
         match self {
-            Self::Issue => "Комментарий в Issue",
-            Self::PullRequest => "Комментарий в Pull Request",
-            Self::ReviewLine => "Комментарий к коду в Pull Request",
-            Self::Review => "Ревью Pull Request",
-            Self::Commit => "Комментарий к коммиту",
-            Self::Discussion => "Комментарий в обсуждении",
+            Self::Issue => crate::tr!("Комментарий в Issue", "Issue comment"),
+            Self::PullRequest => crate::tr!("Комментарий в Pull Request", "Pull request comment"),
+            Self::ReviewLine => crate::tr!(
+                "Комментарий к коду в Pull Request",
+                "Pull request code comment"
+            ),
+            Self::Review => crate::tr!("Ревью Pull Request", "Pull request review"),
+            Self::Commit => crate::tr!("Комментарий к коммиту", "Commit comment"),
+            Self::Discussion => crate::tr!("Комментарий в обсуждении", "Discussion comment"),
         }
     }
 }
@@ -95,8 +98,8 @@ impl GhItemKind {
     pub fn title(self) -> &'static str {
         match self {
             Self::Issue => "Issue",
-            Self::PullRequest => "Pull Request",
-            Self::Discussion => "Обсуждение",
+            Self::PullRequest => crate::tr!("Pull Request", "pull request"),
+            Self::Discussion => crate::tr!("Обсуждение", "discussion"),
         }
     }
 }
@@ -187,6 +190,8 @@ pub enum Body {
     },
     Dlc {
         game: String,
+        #[serde(default)]
+        appid: u32,
         dlc: String,
         dlc_appid: u32,
         change: DlcChange,
@@ -259,13 +264,13 @@ pub fn type_title(body: &Body) -> &'static str {
     match body {
         Body::GithubComment { kind, .. } => kind.title(),
         Body::GithubItem { kind, .. } => kind.title(),
-        Body::RepoWatched { .. } => "Репозиторий",
-        Body::GuideWatched { .. } => "Руководство",
-        Body::GuideComment { .. } => "Комментарий к руководству",
-        Body::GameNews { patch: true, .. } => "Патчноут",
-        Body::GameNews { .. } => "Новость",
-        Body::GameBuild { .. } => "Обновление билда",
+        Body::RepoWatched { .. } => crate::tr!("Репозиторий", "Repository"),
+        Body::GuideWatched { .. } => crate::tr!("Руководство", "Guide"),
+        Body::GuideComment { .. } => crate::tr!("Комментарий к руководству", "Guide comment"),
+        Body::GameNews { patch: true, .. } => crate::tr!("Патчноут", "Patch notes"),
+        Body::GameNews { .. } => crate::tr!("Новость", "News"),
+        Body::GameBuild { .. } => crate::tr!("Обновление билда", "Build update"),
         Body::Dlc { .. } => "DLC",
-        Body::Service { .. } => "Служебное",
+        Body::Service { .. } => crate::tr!("Служебное", "Service"),
     }
 }

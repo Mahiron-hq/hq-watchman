@@ -37,6 +37,7 @@ pub struct OutboxRow {
     pub created_at: i64,
     pub attempts: i64,
     pub reply_to: Option<i64>,
+    pub chat_id: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -239,7 +240,7 @@ impl Db {
     pub async fn due(&self, now: i64) -> Result<Vec<OutboxRow>> {
         let rows = sqlx::query_as!(
             OutboxRow,
-            r#"SELECT id, kind, source, body, occurred_at, created_at, attempts, reply_to
+            r#"SELECT id, kind, source, body, occurred_at, created_at, attempts, reply_to, chat_id
                FROM outbox WHERE status = 0 AND next_attempt_at <= ? ORDER BY id LIMIT 500"#,
             now
         )
@@ -308,6 +309,29 @@ impl Db {
         .execute(&self.pool)
         .await?;
         Ok(r.rows_affected())
+    }
+
+    /// Drops everything still queued for a chat the bot no longer serves.
+    pub async fn drop_chat(&self, chat: i64) -> Result<()> {
+        sqlx::query!(
+            "UPDATE outbox SET status = 2 WHERE status = 0 AND chat_id = ?",
+            chat
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Moves queued rows of a group that became a supergroup.
+    pub async fn move_chat(&self, from: i64, to: i64) -> Result<()> {
+        sqlx::query!(
+            "UPDATE outbox SET chat_id = ? WHERE status = 0 AND chat_id = ?",
+            to,
+            from
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Status and Telegram message of a queued row.
@@ -506,6 +530,17 @@ impl Db {
         for ev in events {
             insert_event(&mut tx, ev, 0).await?;
         }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Forgets all guides so that the next check starts from a silent baseline.
+    pub async fn forget_guides(&self) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query!("DELETE FROM guides").execute(&mut *tx).await?;
+        sqlx::query!("DELETE FROM meta WHERE key = 'guides_baseline'")
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -828,17 +863,37 @@ fn merge_kind(body: &Body) -> Option<&'static str> {
     }
 }
 
-/// Inserts an event unless its dedup key is known. Links a build/patch pair for 5.4.
+/// Queues an event once per recipient chat unless its dedup key is known.
+/// Returns the row of the admin copy, or of the first chat when the admin gets none.
 pub async fn insert_event(
     conn: &mut SqliteConnection,
     ev: &Event,
     merge_window_secs: i64,
+) -> Result<Option<i64>> {
+    let recipients = crate::settings::current().recipients(ev);
+    let mut first = None;
+    for chat in recipients {
+        let id = insert_for(conn, ev, merge_window_secs, chat).await?;
+        first = first.or(id);
+    }
+    Ok(first)
+}
+
+async fn insert_for(
+    conn: &mut SqliteConnection,
+    ev: &Event,
+    merge_window_secs: i64,
+    chat: Option<i64>,
 ) -> Result<Option<i64>> {
     let body = serde_json::to_string(&ev.body)?;
     let kind = if ev.is_service() {
         KIND_SERVICE
     } else {
         KIND_EVENT
+    };
+    let dedup_key = match chat {
+        Some(c) => format!("{}@{c}", ev.dedup_key),
+        None => ev.dedup_key.clone(),
     };
     let source = ev.source.as_str();
     let now = crate::now();
@@ -850,11 +905,12 @@ pub async fn insert_event(
             let since = now - merge_window_secs;
             sqlx::query_scalar!(
                 r#"SELECT o.id FROM outbox o
-                   WHERE o.merge_app = ? AND o.merge_kind = ? AND o.created_at >= ? AND o.reply_to IS NULL
+                   WHERE o.merge_app = ? AND o.merge_kind = ? AND o.chat_id IS ? AND o.created_at >= ? AND o.reply_to IS NULL
                      AND NOT EXISTS (SELECT 1 FROM outbox r WHERE r.reply_to = o.id AND r.merge_kind = ?)
                    ORDER BY o.id DESC LIMIT 1"#,
                 app,
                 other,
+                chat,
                 since,
                 k
             )
@@ -864,9 +920,9 @@ pub async fn insert_event(
         _ => None,
     };
     let result = sqlx::query!(
-        "INSERT OR IGNORE INTO outbox (dedup_key, kind, source, body, occurred_at, created_at, merge_app, merge_kind, reply_to)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ev.dedup_key,
+        "INSERT OR IGNORE INTO outbox (dedup_key, kind, source, body, occurred_at, created_at, merge_app, merge_kind, reply_to, chat_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        dedup_key,
         kind,
         source,
         body,
@@ -874,7 +930,8 @@ pub async fn insert_event(
         now,
         merge_app,
         mkind,
-        reply_to
+        reply_to,
+        chat
     )
     .execute(&mut *conn)
     .await?;
@@ -936,8 +993,42 @@ mod tests {
         assert_eq!(db.pending_count().await.unwrap(), 1);
     }
 
+    /// Games 10 and 11 watched, one extra group; same for every test that routes events.
+    fn watch_test_games() {
+        let mut s = crate::settings::Settings::default();
+        s.games.list = vec![
+            crate::settings::Game::new(10, "G"),
+            crate::settings::Game::new(11, "H"),
+        ];
+        s.chats.push(crate::settings::Chat {
+            id: -77,
+            title: "g".into(),
+            kind: "group".into(),
+            delivery: crate::settings::Delivery {
+                github: false,
+                guides: false,
+                games: true,
+            },
+        });
+        crate::settings::install(s);
+    }
+
+    #[tokio::test]
+    async fn events_fan_out_per_chat() {
+        watch_test_games();
+        let db = Db::memory().await.unwrap();
+        db.enqueue_all(&[build_event(10, "f1")], 0).await.unwrap();
+        db.enqueue_all(&[build_event(12, "f2")], 0).await.unwrap();
+        let rows = db.due(i64::MAX).await.unwrap();
+        let chats: Vec<_> = rows.iter().map(|r| r.chat_id).collect();
+        assert_eq!(chats, vec![None, Some(-77)]);
+        db.drop_chat(-77).await.unwrap();
+        assert_eq!(db.pending_count().await.unwrap(), 1);
+    }
+
     #[tokio::test]
     async fn build_and_patch_are_linked() {
+        watch_test_games();
         let db = Db::memory().await.unwrap();
         db.enqueue_all(&[build_event(10, "b1")], 7200)
             .await
@@ -951,11 +1042,15 @@ mod tests {
         db.enqueue_all(&[patch_event(11, "p3")], 7200)
             .await
             .unwrap();
-        let rows = db.due(i64::MAX).await.unwrap();
-        assert_eq!(rows[0].reply_to, None);
-        assert_eq!(rows[1].reply_to, Some(rows[0].id));
-        assert_eq!(rows[2].reply_to, None);
-        assert_eq!(rows[3].reply_to, None);
+        let all = db.due(i64::MAX).await.unwrap();
+        for chat in [None, Some(-77)] {
+            let rows: Vec<_> = all.iter().filter(|r| r.chat_id == chat).collect();
+            assert_eq!(rows.len(), 4);
+            assert_eq!(rows[0].reply_to, None);
+            assert_eq!(rows[1].reply_to, Some(rows[0].id));
+            assert_eq!(rows[2].reply_to, None);
+            assert_eq!(rows[3].reply_to, None);
+        }
     }
 
     #[tokio::test]

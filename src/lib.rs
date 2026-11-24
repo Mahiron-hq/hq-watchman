@@ -6,7 +6,10 @@ pub mod config;
 pub mod event;
 pub mod github;
 pub mod health;
+#[macro_use]
+pub mod i18n;
 pub mod net;
+pub mod settings;
 pub mod steam;
 pub mod storage;
 pub mod telegram;
@@ -49,13 +52,13 @@ pub fn fmt_time(ts: i64) -> String {
     )
 }
 
-/// Seconds as a short Russian duration, e.g. "2 д 3 ч".
+/// Seconds as a short duration, e.g. "2 д 3 ч" or "2 d 3 h".
 pub fn fmt_duration(secs: i64) -> String {
     let secs = secs.max(0);
     let (d, h, m) = (secs / 86_400, secs % 86_400 / 3600, secs % 3600 / 60);
     match (d, h, m) {
-        (0, 0, m) => format!("{m} мин"),
-        (0, h, m) => format!("{h} ч {m} мин"),
-        (d, h, _) => format!("{d} д {h} ч"),
+        (0, 0, m) => trf!("{m} мин", "{m} min"),
+        (0, h, m) => trf!("{h} ч {m} мин", "{h} h {m} min"),
+        (d, h, _) => trf!("{d} д {h} ч", "{d} d {h} h"),
     }
 }

@@ -1,0 +1,206 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: "true"
+
+jobs:
+  bot-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain and zig
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+          pip install ziglang==0.17.1
+          cargo install cargo-zigbuild --locked --version 0.24.1
+      - name: Build
+        env:
+          HQW_COMMIT: ${{ github.sha }}
+        run: |
+          cargo zigbuild --release --locked --target x86_64-unknown-linux-musl
+          cargo zigbuild --release --locked --target aarch64-unknown-linux-musl
+          mkdir -p dist/linux-amd64 dist/linux-arm64
+          cp target/x86_64-unknown-linux-musl/release/hq-watchman dist/linux-amd64/
+          cp target/aarch64-unknown-linux-musl/release/hq-watchman dist/linux-arm64/
+          file dist/linux-*/hq-watchman
+          ./dist/linux-amd64/hq-watchman --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bot-linux
+          path: dist/
+          retention-days: 7
+
+  bot-windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build
+        env:
+          HQW_COMMIT: ${{ github.sha }}
+        run: |
+          rustup show active-toolchain
+          cargo build --release --locked
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/hq-watchman.exe dist/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bot-windows
+          path: dist/
+          retention-days: 7
+
+  setup:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            name: windows-x64
+          - os: ubuntu-24.04
+            name: linux-x64
+          - os: macos-15
+            name: macos-universal
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      - name: Build (Windows, Linux)
+        if: runner.os != 'macOS'
+        working-directory: setup
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          cargo build --release --locked
+          mkdir -p ../dist
+          if [ -f target/release/hq-watchman-setup.exe ]; then cp target/release/hq-watchman-setup.exe ../dist/; else cp target/release/hq-watchman-setup ../dist/; fi
+      - name: Build (macOS app)
+        if: runner.os == 'macOS'
+        working-directory: setup
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          app="../dist/HQ Watchman Setup.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" icon.iconset
+          lipo -create -output "$app/Contents/MacOS/hq-watchman-setup" target/aarch64-apple-darwin/release/hq-watchman-setup target/x86_64-apple-darwin/release/hq-watchman-setup
+          for s in 16 32 128 256 512; do sips -z $s $s assets/icon-256.png --out icon.iconset/icon_${s}x${s}.png >/dev/null; done
+          iconutil -c icns icon.iconset -o "$app/Contents/Resources/icon.icns"
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          cat > "$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>CFBundleName</key><string>HQ Watchman Setup</string>
+          <key>CFBundleIdentifier</key><string>online.mahiron.hq-watchman-setup</string>
+          <key>CFBundleExecutable</key><string>hq-watchman-setup</string>
+          <key>CFBundleIconFile</key><string>icon</string>
+          <key>CFBundlePackageType</key><string>APPL</string>
+          <key>CFBundleShortVersionString</key><string>${version}</string>
+          <key>CFBundleVersion</key><string>${version}</string>
+          <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Lev Burmistrov (Mahiron-hq), GPL-3.0-or-later</string>
+          <key>LSMinimumSystemVersion</key><string>11.0</string>
+          <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          EOF
+          sed -i '' 's/^          //' "$app/Contents/Info.plist"
+          codesign --force --deep --sign - "$app"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: setup-${{ matrix.name }}
+          path: dist/
+          retention-days: 7
+
+  package:
+    runs-on: ubuntu-24.04
+    needs: [bot-linux, bot-windows, setup]
+    permissions:
+      contents: write
+    env:
+      TRIVY_DB_REPOSITORY: mirror.gcr.io/aquasec/trivy-db:2,public.ecr.aws/aquasecurity/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: art
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Version
+        id: v
+        run: echo "version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+      - name: Images and archives
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p out dist
+          cp -r art/bot-linux/* dist/
+          chmod 755 dist/linux-*/hq-watchman
+          for arch in amd64 arm64; do
+            tar -czf "out/hq-watchman-$V-linux-$arch.tar.gz" -C "dist/linux-$arch" hq-watchman
+            docker buildx build -f Dockerfile.release --platform "linux/$arch" -t "hq-watchman:$V" --output "type=docker,dest=img-$arch.tar" .
+            gzip -9 -c "img-$arch.tar" > "out/hq-watchman-$V-docker-$arch.tar.gz"
+          done
+          docker load -i img-amd64.tar
+          test "$(docker image inspect hq-watchman:$V --format '{{.Config.User}}')" = "65532:65532"
+          docker run --rm "hq-watchman:$V" --version
+          cp art/bot-windows/hq-watchman.exe "out/hq-watchman-$V-windows-x64.exe"
+          cp art/setup-windows-x64/hq-watchman-setup.exe "out/hq-watchman-setup-$V-windows-x64.exe"
+          chmod 755 art/setup-linux-x64/hq-watchman-setup
+          tar -czf "out/hq-watchman-setup-$V-linux-x64.tar.gz" -C art/setup-linux-x64 hq-watchman-setup
+          (cd art/setup-macos-universal && chmod 755 "HQ Watchman Setup.app/Contents/MacOS/hq-watchman-setup" && zip -qry "../../out/hq-watchman-setup-$V-macos-universal.zip" "HQ Watchman Setup.app")
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: hq-watchman:${{ steps.v.outputs.version }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: hq-watchman:${{ steps.v.outputs.version }}
+          format: cyclonedx
+          output: out/hq-watchman-${{ steps.v.outputs.version }}-sbom.cdx.json
+          skip-setup-trivy: true
+      - name: Checksums and signature
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -qq minisign >/dev/null
+          cd out
+          sha256sum * > SHA256SUMS.txt
+          umask 077
+          printf '%s\n' "$MINISIGN_KEY" > ../minisign.key
+          minisign -S -s ../minisign.key -m SHA256SUMS.txt -t "HQ Watchman ${{ steps.v.outputs.version }}" < /dev/null
+          rm -f ../minisign.key
+          minisign -V -P "$(tail -n1 ../minisign.pub)" -m SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: out/
+          retention-days: 14
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          gh release create "v$V" out/* --draft --title "HQ Watchman $V" --notes "Draft, notes are added before publishing."

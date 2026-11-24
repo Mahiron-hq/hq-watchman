@@ -1,0 +1,762 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+import { Button, LineEdit, CheckBox, Switch, ScrollView, ListView, ComboBox, Spinner, TextEdit } from "std-widgets.slint";
+
+export struct GameRow { appid: string, name: string }
+export struct Found { appid: string, name: string }
+export struct ToggleRow { key: string, label: string, on: bool, header: bool, action: string }
+export struct ProfileRow { name: string, host: string, port: string, user: string, target: string, key-path: string }
+export struct StepRow { id: string, label: string }
+
+export global Tr {
+    in-out property <bool> en;
+    public pure function t(r: string, e: string) -> string {
+        return Tr.en ? e : r;
+    }
+}
+
+export global S {
+    in-out property <string> page: "welcome";
+    in-out property <[StepRow]> steps;
+    in-out property <string> error;
+    in-out property <string> info;
+    in-out property <bool> busy;
+    in property <bool> windows-host;
+    in property <string> version;
+
+    // target
+    in-out property <string> target: "docker";
+
+    // server
+    in-out property <string> host;
+    in-out property <string> port: "22";
+    in-out property <string> user: "root";
+    in-out property <bool> auth-key;
+    in-out property <string> password;
+    in-out property <string> key-path;
+    in-out property <string> key-pass;
+    in-out property <string> sudo-pass;
+    in-out property <string> server-status;
+    in-out property <bool> server-ok;
+    in-out property <[ProfileRow]> profiles;
+
+    // sources
+    in-out property <bool> src-github: true;
+    in-out property <bool> src-guides: true;
+    in-out property <bool> src-games: true;
+
+    // telegram
+    in-out property <string> tg-token;
+    in-out property <string> tg-bot;
+    in-out property <string> tg-admin;
+    in-out property <string> tg-admin-name;
+    in-out property <bool> tg-waiting;
+
+    // github
+    in-out property <string> gh-login;
+    in-out property <bool> gh-webhook;
+    in-out property <string> gh-domain;
+    in-out property <string> gh-app;
+    in-out property <bool> gh-installed;
+    in-out property <bool> gh-waiting;
+
+    // steam
+    in-out property <string> st-profile;
+    in-out property <string> st-profile-name;
+    in-out property <string> st-key;
+    in-out property <string> st-key-status;
+
+    // games
+    in-out property <string> game-query;
+    in-out property <[GameRow]> games;
+    in-out property <[Found]> found;
+
+    // notifications
+    in-out property <bool> bot-en;
+    in-out property <string> timezone;
+    in-out property <bool> quiet-on: true;
+    in-out property <string> quiet-start: "22:00";
+    in-out property <string> quiet-end: "08:00";
+
+    // install
+    in-out property <string> summary;
+    in-out property <string> log;
+    in-out property <bool> done;
+    in-out property <bool> failed;
+    in-out property <string> release-source;
+
+    // host key
+    in-out property <bool> hk-show;
+    in-out property <string> hk-text;
+
+    // manage
+    in-out property <string> tab: "status";
+    in-out property <string> status-text;
+    in-out property <[ToggleRow]> toggles;
+    in-out property <string> logs;
+    in-out property <bool> keep-data: true;
+    in-out property <string> update-text;
+    in-out property <bool> update-ready;
+    in-out property <bool> confirm-uninstall;
+
+    callback set-lang(bool);
+    callback next();
+    callback back();
+    callback go(string);
+    callback open-url(string);
+    callback pick-key();
+    callback pick-folder();
+    callback server-test();
+    callback tg-check();
+    callback tg-wait();
+    callback tg-cancel();
+    callback gh-create();
+    callback gh-install();
+    callback st-check();
+    callback st-key-check();
+    callback game-search();
+    callback game-add(string, string);
+    callback game-remove(string);
+    callback install();
+    callback hk-accept();
+    callback hk-reject();
+    callback use-profile(int);
+    callback forget-profile(int);
+    callback connect();
+    callback refresh();
+    callback toggle(string);
+    callback row-action(string);
+    callback save-settings();
+    callback load-logs();
+    callback check-update();
+    callback apply-update();
+    callback restart();
+    callback backup();
+    callback restore();
+    callback uninstall();
+    callback reconfigure();
+}
+
+component Title inherits Text {
+    font-size: 22px;
+    font-weight: 700;
+    wrap: word-wrap;
+}
+
+component Hint inherits Text {
+    wrap: word-wrap;
+    font-size: 13px;
+    opacity: 0.75;
+}
+
+component Label inherits Text {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+component Field inherits VerticalLayout {
+    in property <string> label;
+    spacing: 4px;
+    Label { text: root.label; }
+    @children
+}
+
+component Link inherits Text {
+    in property <string> url;
+    color: #3b82f6;
+    font-size: 13px;
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { S.open-url(root.url); }
+    }
+}
+
+component Ok inherits Text {
+    color: #16a34a;
+    font-weight: 600;
+    wrap: word-wrap;
+}
+
+component Choice inherits Rectangle {
+    in property <bool> selected;
+    in property <string> title;
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+    border-radius: 8px;
+    border-width: selected ? 2px : 1px;
+    border-color: selected ? #3b82f6 : #8884;
+    opacity: enabled ? 1 : 0.45;
+    min-height: lay.preferred-height;
+    lay := VerticalLayout {
+        padding: 12px;
+        spacing: 4px;
+        Text { text: root.title; font-weight: 700; wrap: word-wrap; }
+        Hint { text: root.text; }
+    }
+    TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+component Welcome inherits VerticalLayout {
+    spacing: 16px;
+    Title { text: "HQ Watchman"; font-size: 30px; }
+    Hint {
+        text: Tr.t("Telegram-бот, который сообщает вам о событиях в репозиториях GitHub, комментариях под руководствами Steam и обновлениях игр Steam. Эта программа установит его на ваш сервер или компьютер, проверит работу и поможет менять настройки.",
+            "A Telegram bot that tells you about events in your GitHub repositories, comments under your Steam guides and updates of Steam games. This app installs it on your server or computer, checks that it works and helps you change its settings.");
+        font-size: 15px;
+    }
+    Choice {
+        selected: true;
+        title: Tr.t("Установить бота", "Install the bot");
+        text: Tr.t("Пошаговая настройка: Telegram, источники, сервер. Около 10 минут.", "Step by step: Telegram, sources, server. About 10 minutes.");
+        clicked => { S.go("target"); }
+    }
+    Choice {
+        title: Tr.t("Управлять установленным ботом", "Manage an installed bot");
+        text: Tr.t("Настройки уведомлений, игры, журнал, обновление, резервная копия, удаление.", "Notification settings, games, logs, update, backup, removal.");
+        clicked => { S.go("connect"); }
+    }
+    Rectangle { vertical-stretch: 1; }
+    Hint { text: "HQ Watchman Setup " + S.version + " · GPL-3.0-or-later · Lev Burmistrov (Mahiron-hq)"; }
+}
+
+component TargetPage inherits VerticalLayout {
+    spacing: 12px;
+    Title { text: Tr.t("Где будет работать бот?", "Where will the bot run?"); }
+    Hint { text: Tr.t("Бот должен работать круглосуточно, поэтому лучше всего подходит сервер (VPS) с Debian или Ubuntu.", "The bot must run around the clock, so a server (VPS) with Debian or Ubuntu fits best."); }
+    Choice {
+        selected: S.target == "docker";
+        title: Tr.t("Сервер Linux, в Docker (рекомендуется)", "Linux server, in Docker (recommended)");
+        text: Tr.t("Изолированный контейнер без оболочки и прав root. Docker установится сам, если его нет.", "Isolated container without a shell or root rights. Docker is installed automatically if missing.");
+        clicked => { S.target = "docker"; }
+    }
+    Choice {
+        selected: S.target == "systemd";
+        title: Tr.t("Сервер Linux, без Docker", "Linux server, without Docker");
+        text: Tr.t("Отдельная служба systemd со своим пользователем и жёсткими ограничениями. Подходит для слабых серверов.", "A systemd service with its own user and strict limits. Good for small servers.");
+        clicked => { S.target = "systemd"; }
+    }
+    Choice {
+        enabled: S.windows-host;
+        selected: S.target == "windows";
+        title: Tr.t("Этот компьютер (Windows)", "This computer (Windows)");
+        text: Tr.t("Фоновая задача, запускается вместе с Windows. Работает, только пока компьютер включён. GitHub только в режиме опроса.", "A background task that starts with Windows. Works only while the computer is on. GitHub only in polling mode.");
+        clicked => { S.target = "windows"; }
+    }
+}
+
+component ServerFields inherits VerticalLayout {
+    spacing: 10px;
+    HorizontalLayout {
+        spacing: 10px;
+        Field {
+            horizontal-stretch: 3;
+            label: Tr.t("Адрес сервера (IP или имя)", "Server address (IP or name)");
+            LineEdit { text <=> S.host; placeholder-text: "203.0.113.10"; }
+        }
+        Field {
+            horizontal-stretch: 1;
+            label: Tr.t("Порт SSH", "SSH port");
+            LineEdit { text <=> S.port; input-type: number; }
+        }
+        Field {
+            horizontal-stretch: 2;
+            label: Tr.t("Пользователь", "User");
+            LineEdit { text <=> S.user; }
+        }
+    }
+    HorizontalLayout {
+        spacing: 16px;
+        CheckBox { text: Tr.t("Вход по паролю", "Password login"); checked: !S.auth-key; toggled => { S.auth-key = !self.checked; } }
+        CheckBox { text: Tr.t("Вход по ключу SSH", "SSH key login"); checked: S.auth-key; toggled => { S.auth-key = self.checked; } }
+    }
+    if !S.auth-key: Field {
+        label: Tr.t("Пароль (не сохраняется)", "Password (not saved)");
+        LineEdit { text <=> S.password; input-type: password; }
+    }
+    if S.auth-key: HorizontalLayout {
+        spacing: 10px;
+        Field {
+            horizontal-stretch: 3;
+            label: Tr.t("Файл ключа", "Key file");
+            HorizontalLayout {
+                spacing: 6px;
+                LineEdit { text <=> S.key-path; }
+                Button { text: "…"; clicked => { S.pick-key(); } }
+            }
+        }
+        Field {
+            horizontal-stretch: 2;
+            label: Tr.t("Пароль ключа, если есть", "Key passphrase, if any");
+            LineEdit { text <=> S.key-pass; input-type: password; }
+        }
+    }
+    if S.user != "root": Field {
+        label: Tr.t("Пароль sudo (пусто: как пароль входа)", "sudo password (empty: same as login password)");
+        LineEdit { text <=> S.sudo-pass; input-type: password; }
+    }
+}
+
+component ServerPage inherits VerticalLayout {
+    spacing: 12px;
+    Title { text: Tr.t("Подключение к серверу", "Server connection"); }
+    Hint { text: Tr.t("Нужен доступ по SSH с правами root или sudo. Пароли используются только во время работы программы и никуда не сохраняются.", "SSH access with root or sudo rights is needed. Passwords are used only while this app runs and are never saved."); }
+    ServerFields {}
+    HorizontalLayout {
+        spacing: 10px;
+        alignment: start;
+        Button { text: Tr.t("Проверить подключение", "Test connection"); enabled: !S.busy; clicked => { S.server-test(); } }
+    }
+    if S.server-ok: Ok { text: S.server-status; }
+    if !S.server-ok && S.server-status != "": Hint { text: S.server-status; }
+}
+
+component SourcesPage inherits VerticalLayout {
+    spacing: 12px;
+    Title { text: Tr.t("Что отслеживать?", "What to watch?"); }
+    Hint { text: Tr.t("Выберите только нужное: программа спросит данные лишь для выбранных источников. Включить остальное можно позже, запустив установку заново.", "Choose only what you need: the app asks only for the chosen sources. You can add the rest later by running the setup again."); }
+    Choice {
+        selected: S.src-github;
+        title: (S.src-github ? "✅ " : "⬜ ") + "GitHub";
+        text: Tr.t("Новые Issue, Pull Request, обсуждения, комментарии и ревью во всех ваших репозиториях. Нужен аккаунт GitHub, приложение GitHub App создастся само.", "New issues, pull requests, discussions, comments and reviews in all your repositories. Needs a GitHub account, the GitHub App is created automatically.");
+        clicked => { S.src-github = !S.src-github; }
+    }
+    Choice {
+        selected: S.src-guides;
+        title: (S.src-guides ? "✅ " : "⬜ ") + Tr.t("Руководства Steam", "Steam guides");
+        text: Tr.t("Новые и удалённые комментарии под вашими руководствами. Нужна ссылка на ваш профиль Steam.", "New and deleted comments under your guides. Needs a link to your Steam profile.");
+        clicked => { S.src-guides = !S.src-guides; }
+    }
+    Choice {
+        selected: S.src-games;
+        title: (S.src-games ? "✅ " : "⬜ ") + Tr.t("Игры Steam", "Steam games");
+        text: Tr.t("Обновления, бета-ветки, DLC, новости и патчноуты выбранных игр. Ничего, кроме списка игр, не нужно.", "Updates, beta branches, DLC, news and patch notes of chosen games. Nothing but the game list is needed.");
+        clicked => { S.src-games = !S.src-games; }
+    }
+}
+
+component TelegramPage inherits VerticalLayout {
+    spacing: 12px;
+    Title { text: "Telegram"; }
+    Hint { text: Tr.t("1. Откройте @BotFather в Telegram, отправьте /newbot и придумайте имя. BotFather пришлёт токен вида 123456:ABC…", "1. Open @BotFather in Telegram, send /newbot and choose a name. BotFather sends a token like 123456:ABC…"); }
+    Link { text: Tr.t("Открыть @BotFather", "Open @BotFather"); url: "https://t.me/BotFather"; }
+    Field {
+        label: Tr.t("Токен бота", "Bot token");
+        HorizontalLayout {
+            spacing: 6px;
+            LineEdit { text <=> S.tg-token; input-type: password; placeholder-text: "123456789:AA…"; }
+            Button { text: Tr.t("Проверить", "Check"); enabled: !S.busy; clicked => { S.tg-check(); } }
+        }
+    }
+    if S.tg-bot != "": Ok { text: Tr.t("Бот найден: @", "Bot found: @") + S.tg-bot; }
+    if S.tg-bot != "": VerticalLayout {
+        spacing: 8px;
+        Hint { text: Tr.t("2. Откройте своего бота и нажмите «Запустить» (Start). Так программа узнает ваш ID: только вы сможете управлять ботом.", "2. Open your bot and press Start. This tells the app your ID: only you will be able to control the bot."); }
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: start;
+            Button { text: Tr.t("Открыть бота", "Open the bot"); clicked => { S.open-url("https://t.me/" + S.tg-bot); } }
+            if !S.tg-waiting: Button { text: Tr.t("Ждать нажатия Start", "Wait for Start"); clicked => { S.tg-wait(); } }
+            if S.tg-waiting: Spinner { indeterminate: true; width: 24px; height: 24px; }
+            if S.tg-waiting: Button { text: Tr.t("Отмена", "Cancel"); clicked => { S.tg-cancel(); } }
+        }
+    }
+    if S.tg-admin != "": Ok { text: Tr.t("Владелец: ", "Owner: ") + S.tg-admin-name + " (ID " + S.tg-admin + ")"; }
+    Field {
+        label: Tr.t("Или введите свой числовой ID Telegram вручную", "Or enter your numeric Telegram ID manually");
+        LineEdit { text <=> S.tg-admin; input-type: number; }
+    }
+}
+
+component GithubPage inherits VerticalLayout {
+    spacing: 12px;
+    Title { text: "GitHub"; }
+    Field {
+        label: Tr.t("Ваш логин на GitHub (или имя организации)", "Your GitHub login (or organization name)");
+        LineEdit { text <=> S.gh-login; enabled: S.gh-app == ""; }
+    }
+    Label { text: Tr.t("Как бот получает события", "How the bot receives events"); }
+    Choice {
+        selected: !S.gh-webhook;
+        enabled: S.gh-app == "";
+        title: Tr.t("Опрос, без домена (проще)", "Polling, no domain (simpler)");
+        text: Tr.t("Бот сам раз в минуту забирает события из журнала GitHub. Не нужны домен и открытые порты. Задержка до минуты.", "The bot reads events from the GitHub log once a minute. No domain or open ports needed. Up to a minute of delay.");
+        clicked => { S.gh-webhook = false; }
+    }
+    Choice {
+        selected: S.gh-webhook;
+        enabled: S.gh-app == "" && S.target != "windows";
+        title: Tr.t("Вебхук, свой домен (мгновенно)", "Webhook, own domain (instant)");
+        text: Tr.t("GitHub сам присылает события на ваш домен. Нужен домен или поддомен, который указывает на сервер. Сертификат HTTPS получится автоматически.", "GitHub pushes events to your domain. Needs a domain or subdomain pointing to the server. The HTTPS certificate is obtained automatically.");
+        clicked => { S.gh-webhook = true; }
+    }
+    if S.gh-webhook: Field {
+        label: Tr.t("Домен для вебхука, например hooks.example.org", "Webhook domain, e.g. hooks.example.org");
+        LineEdit { text <=> S.gh-domain; enabled: S.gh-app == ""; }
+    }
+    HorizontalLayout {
+        spacing: 10px;
+        alignment: start;
+        Button { text: Tr.t("1. Создать GitHub App", "1. Create the GitHub App"); enabled: !S.busy && S.gh-app == ""; clicked => { S.gh-create(); } }
+        Button { text: Tr.t("2. Установить на аккаунт", "2. Install on the account"); enabled: !S.busy && S.gh-app != "" && !S.gh-installed; clicked => { S.gh-install(); } }
+        if S.gh-waiting: Spinner { indeterminate: true; width: 24px; height: 24px; }
+    }
+    Hint { text: Tr.t("Откроется браузер: нажмите «Create GitHub App», затем на шаге 2 выберите «All repositories» и «Install». Права только на чтение.", "A browser opens: press \"Create GitHub App\", then in step 2 choose \"All repositories\" and \"Install\". Read-only access."); }
+    if S.gh-app != "": Ok { text: Tr.t("App создано: ", "App created: ") + S.gh-app; }
+    if S.gh-installed: Ok { text: Tr.t("App установлено", "App installed"); }
+}
+
+component SteamPage inherits VerticalLayout {
+    spacing: 12px;
+    Title { text: Tr.t("Руководства Steam", "Steam guides"); }
+    Field {
+        label: Tr.t("Ссылка на ваш профиль Steam или SteamID64", "Link to your Steam profile or SteamID64");
+        HorizontalLayout {
+            spacing: 6px;
+            LineEdit { text <=> S.st-profile; placeholder-text: "https://steamcommunity.com/id/…"; }
+            Button { text: Tr.t("Проверить", "Check"); enabled: !S.busy; clicked => { S.st-check(); } }
+        }
+    }
+    if S.st-profile-name != "": Ok { text: Tr.t("Профиль: ", "Profile: ") + S.st-profile-name; }
+    Hint { text: Tr.t("Профиль и руководства должны быть открытыми.", "The profile and guides must be public."); }
+    Field {
+        label: Tr.t("Ключ Steam Web API (необязательно)", "Steam Web API key (optional)");
+        HorizontalLayout {
+            spacing: 6px;
+            LineEdit { text <=> S.st-key; input-type: password; }
+            Button { text: Tr.t("Проверить", "Check"); enabled: !S.busy && S.st-key != ""; clicked => { S.st-key-check(); } }
+        }
+    }
+    if S.st-key-status != "": Ok { text: S.st-key-status; }
+    Hint { text: Tr.t("С ключом список руководств читается надёжнее. Без ключа бот читает страницу профиля.", "With a key the guide list is read more reliably. Without it the bot reads the profile page."); }
+    Link { text: Tr.t("Получить ключ", "Get a key"); url: "https://steamcommunity.com/dev/apikey"; }
+}
+
+component GamesEditor inherits VerticalLayout {
+    spacing: 10px;
+    Field {
+        label: Tr.t("Название игры, ссылка на магазин или AppID", "Game name, store link or AppID");
+        HorizontalLayout {
+            spacing: 6px;
+            LineEdit { text <=> S.game-query; accepted => { S.game-search(); } }
+            Button { text: Tr.t("Найти", "Search"); enabled: !S.busy; clicked => { S.game-search(); } }
+        }
+    }
+    for f in S.found: HorizontalLayout {
+        spacing: 8px;
+        Text { text: f.name + " (" + f.appid + ")"; vertical-alignment: center; horizontal-stretch: 1; wrap: word-wrap; }
+        Button { text: Tr.t("Добавить", "Add"); clicked => { S.game-add(f.appid, f.name); } }
+    }
+    Label { text: Tr.t("Отслеживаемые игры: ", "Watched games: ") + S.games.length; }
+    for g in S.games: HorizontalLayout {
+        spacing: 8px;
+        Text { text: (g.name == "" ? "App" : g.name) + " (" + g.appid + ")"; vertical-alignment: center; horizontal-stretch: 1; wrap: word-wrap; }
+        Button { text: Tr.t("Убрать", "Remove"); clicked => { S.game-remove(g.appid); } }
+    }
+}
+
+component GamesPage inherits VerticalLayout {
+    spacing: 12px;
+    Title { text: Tr.t("Игры Steam", "Steam games"); }
+    Hint { text: Tr.t("Добавьте игры, обновления которых нужно отслеживать. Список можно менять потом в Telegram (/settings) или здесь.", "Add the games whose updates you want to follow. You can change the list later in Telegram (/settings) or here."); }
+    GamesEditor {}
+}
+
+component NotifyFields inherits VerticalLayout {
+    spacing: 10px;
+    HorizontalLayout {
+        spacing: 16px;
+        CheckBox { text: "Русский"; checked: !S.bot-en; toggled => { S.bot-en = !self.checked; } }
+        CheckBox { text: "English"; checked: S.bot-en; toggled => { S.bot-en = self.checked; } }
+    }
+    Field {
+        label: Tr.t("Часовой пояс (IANA)", "Time zone (IANA)");
+        LineEdit { text <=> S.timezone; placeholder-text: "Europe/Moscow"; }
+    }
+    CheckBox { text: Tr.t("Тихие часы: сообщения без звука", "Quiet hours: messages without sound"); checked <=> S.quiet-on; }
+    if S.quiet-on: HorizontalLayout {
+        spacing: 10px;
+        Field { label: Tr.t("С", "From"); LineEdit { text <=> S.quiet-start; } }
+        Field { label: Tr.t("До", "To"); LineEdit { text <=> S.quiet-end; } }
+    }
+}
+
+component NotifyPage inherits VerticalLayout {
+    spacing: 12px;
+    Title { text: Tr.t("Уведомления", "Notifications"); }
+    Label { text: Tr.t("Язык сообщений бота", "Language of bot messages"); }
+    NotifyFields {}
+}
+
+component SummaryPage inherits VerticalLayout {
+    spacing: 12px;
+    Title { text: Tr.t("Всё готово к установке", "Ready to install"); }
+    Text { text: S.summary; wrap: word-wrap; }
+    Hint { text: Tr.t("Файлы бота берутся из релиза на GitHub и проверяются по подписи и контрольной сумме.", "Bot files come from the GitHub release and are checked by signature and checksum."); }
+    if S.release-source != "": Hint { text: Tr.t("Источник файлов: ", "File source: ") + S.release-source; }
+    HorizontalLayout {
+        alignment: start;
+        Button { text: Tr.t("Взять файлы из папки…", "Use files from a folder…"); clicked => { S.pick-folder(); } }
+    }
+}
+
+component LogView inherits Rectangle {
+    in property <string> text;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: #8884;
+    sv := ScrollView {
+        content-y: min(0px, self.visible-height - self.content-height);
+        VerticalLayout {
+            padding: 8px;
+            Text { text: root.text; wrap: word-wrap; font-family: "Consolas"; font-size: 12px; }
+        }
+    }
+}
+
+component ProgressPage inherits VerticalLayout {
+    spacing: 12px;
+    Title {
+        text: S.done ? Tr.t("Бот установлен и работает", "The bot is installed and running")
+            : S.failed ? Tr.t("Установка не удалась", "Installation failed")
+            : Tr.t("Установка…", "Installing…");
+    }
+    if S.done: Ok { text: Tr.t("Бот прислал вам сообщение в Telegram. Настройки: команда /settings в чате с ботом или раздел «Управление» в этой программе.", "The bot sent you a Telegram message. Settings: the /settings command in the bot chat or \"Manage\" in this app."); }
+    LogView { text: S.log; vertical-stretch: 1; min-height: 300px; }
+    HorizontalLayout {
+        spacing: 10px;
+        alignment: start;
+        if !S.done && !S.failed: Spinner { indeterminate: true; width: 24px; height: 24px; }
+        if S.done && S.tg-bot != "": Button { text: Tr.t("Открыть бота", "Open the bot"); clicked => { S.open-url("https://t.me/" + S.tg-bot); } }
+        if S.done: Button { text: Tr.t("Управление", "Manage"); clicked => { S.go("manage"); } }
+        if S.failed: Button { text: Tr.t("Повторить", "Retry"); clicked => { S.install(); } }
+    }
+}
+
+component ConnectPage inherits VerticalLayout {
+    spacing: 12px;
+    Title { text: Tr.t("Подключение к установленному боту", "Connect to an installed bot"); }
+    if S.profiles.length > 0: VerticalLayout {
+        spacing: 6px;
+        Label { text: Tr.t("Сохранённые серверы", "Saved servers"); }
+        for p[i] in S.profiles: HorizontalLayout {
+            spacing: 8px;
+            Text { text: p.name + " · " + p.user + "@" + p.host + ":" + p.port + " · " + p.target; vertical-alignment: center; horizontal-stretch: 1; }
+            Button { text: Tr.t("Выбрать", "Select"); clicked => { S.use-profile(i); } }
+            Button { text: "×"; clicked => { S.forget-profile(i); } }
+        }
+    }
+    if S.windows-host: CheckBox {
+        text: Tr.t("Бот установлен на этом компьютере", "The bot is installed on this computer");
+        checked: S.target == "windows";
+        toggled => { S.target = self.checked ? "windows" : "docker"; }
+    }
+    if S.target != "windows": ServerFields {}
+    HorizontalLayout {
+        alignment: start;
+        Button { text: Tr.t("Подключиться", "Connect"); enabled: !S.busy; clicked => { S.connect(); } }
+    }
+}
+
+component Tab inherits Rectangle {
+    in property <string> id;
+    in property <string> label;
+    height: 34px;
+    min-width: txt.preferred-width + 24px;
+    border-radius: 6px;
+    background: S.tab == id ? #3b82f633 : transparent;
+    txt := Text { text: root.label; font-weight: S.tab == root.id ? 700 : 400; }
+    TouchArea { clicked => { S.tab = root.id; if root.id == "logs" { S.load-logs(); } } }
+}
+
+component ManagePage inherits VerticalLayout {
+    spacing: 10px;
+    HorizontalLayout {
+        Title { text: Tr.t("Управление ботом", "Bot management"); horizontal-stretch: 1; }
+        Button { text: Tr.t("Обновить", "Refresh"); enabled: !S.busy; clicked => { S.refresh(); } }
+    }
+    HorizontalLayout {
+        spacing: 4px;
+        alignment: start;
+        Tab { id: "status"; label: Tr.t("Состояние", "Status"); }
+        Tab { id: "settings"; label: Tr.t("Уведомления", "Notifications"); }
+        Tab { id: "games"; label: Tr.t("Игры", "Games"); }
+        Tab { id: "general"; label: Tr.t("Общие", "General"); }
+        Tab { id: "logs"; label: Tr.t("Журнал", "Logs"); }
+        Tab { id: "service"; label: Tr.t("Обслуживание", "Maintenance"); }
+    }
+    if S.tab == "status": VerticalLayout {
+        spacing: 8px;
+        Text { text: S.status-text; wrap: word-wrap; }
+        Rectangle { vertical-stretch: 1; }
+    }
+    if S.tab == "settings": VerticalLayout {
+        spacing: 8px;
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                spacing: 4px;
+                padding-right: 12px;
+                for r in S.toggles: HorizontalLayout {
+                    spacing: 8px;
+                    if r.header: Label { text: r.label; font-size: 15px; }
+                    if !r.header && r.action == "": Switch { text: r.label; checked: r.on; toggled => { S.toggle(r.key); } }
+                    if !r.header && r.action != "": Button { text: r.label; clicked => { S.row-action(r.key); } }
+                }
+            }
+        }
+        HorizontalLayout { alignment: start; Button { text: Tr.t("Сохранить", "Save"); enabled: !S.busy; clicked => { S.save-settings(); } } }
+    }
+    if S.tab == "games": VerticalLayout {
+        ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; GamesEditor {} } }
+        HorizontalLayout { alignment: start; Button { text: Tr.t("Сохранить", "Save"); enabled: !S.busy; clicked => { S.save-settings(); } } }
+    }
+    if S.tab == "general": VerticalLayout {
+        spacing: 8px;
+        Label { text: Tr.t("Язык сообщений бота", "Language of bot messages"); }
+        NotifyFields {}
+        Rectangle { vertical-stretch: 1; }
+        HorizontalLayout { alignment: start; Button { text: Tr.t("Сохранить", "Save"); enabled: !S.busy; clicked => { S.save-settings(); } } }
+    }
+    if S.tab == "logs": VerticalLayout {
+        spacing: 8px;
+        LogView { text: S.logs; vertical-stretch: 1; }
+        HorizontalLayout { alignment: start; Button { text: Tr.t("Обновить журнал", "Reload logs"); enabled: !S.busy; clicked => { S.load-logs(); } } }
+    }
+    if S.tab == "service": ScrollView {
+        VerticalLayout {
+            spacing: 12px;
+            padding-right: 12px;
+            Label { text: Tr.t("Обновление", "Update"); }
+            Text { text: S.update-text; wrap: word-wrap; }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Button { text: Tr.t("Проверить обновления", "Check for updates"); enabled: !S.busy; clicked => { S.check-update(); } }
+                Button { text: Tr.t("Взять файлы из папки…", "Use files from a folder…"); enabled: !S.busy; clicked => { S.pick-folder(); } }
+                if S.update-ready: Button { text: Tr.t("Установить", "Install"); enabled: !S.busy; clicked => { S.apply-update(); } }
+            }
+            Label { text: Tr.t("Резервная копия базы", "Database backup"); }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Button { text: Tr.t("Скачать копию…", "Download a copy…"); enabled: !S.busy; clicked => { S.backup(); } }
+                Button { text: Tr.t("Восстановить из файла…", "Restore from a file…"); enabled: !S.busy; clicked => { S.restore(); } }
+            }
+            Label { text: Tr.t("Ключи и источники", "Credentials and sources"); }
+            Hint { text: Tr.t("Сменить токен, подключить GitHub или Steam: мастер установки заново, данные бота сохранятся.", "Change the token, add GitHub or Steam: run the setup wizard again, bot data is kept."); }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Button { text: Tr.t("Перезапустить бота", "Restart the bot"); enabled: !S.busy; clicked => { S.restart(); } }
+                Button { text: Tr.t("Мастер установки", "Setup wizard"); enabled: !S.busy; clicked => { S.reconfigure(); } }
+            }
+            Label { text: Tr.t("Удаление", "Removal"); }
+            CheckBox { text: Tr.t("Оставить базу данных на сервере", "Keep the database on the server"); checked <=> S.keep-data; }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                if !S.confirm-uninstall: Button { text: Tr.t("Удалить бота…", "Remove the bot…"); enabled: !S.busy; clicked => { S.confirm-uninstall = true; } }
+                if S.confirm-uninstall: Button { text: Tr.t("Да, удалить", "Yes, remove"); clicked => { S.confirm-uninstall = false; S.uninstall(); } }
+                if S.confirm-uninstall: Button { text: Tr.t("Отмена", "Cancel"); clicked => { S.confirm-uninstall = false; } }
+            }
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "HQ Watchman Setup";
+    icon: @image-url("../assets/icon-256.png");
+    preferred-width: 1000px;
+    preferred-height: 700px;
+    min-width: 760px;
+    min-height: 560px;
+    default-font-size: 14px;
+
+    HorizontalLayout {
+        Rectangle {
+            width: 220px;
+            background: #1e293b;
+            VerticalLayout {
+                padding: 18px;
+                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    Image { source: @image-url("../assets/icon-256.png"); width: 36px; height: 36px; }
+                    Text { text: "HQ Watchman"; color: white; font-size: 17px; font-weight: 700; vertical-alignment: center; }
+                }
+                Rectangle { height: 10px; }
+                for st in S.steps: Text {
+                    text: st.label;
+                    color: st.id == S.page ? #ffffff : #94a3b8;
+                    font-weight: st.id == S.page ? 700 : 400;
+                    wrap: word-wrap;
+                }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Button { text: "RU"; primary: !Tr.en; clicked => { S.set-lang(false); } }
+                    Button { text: "EN"; primary: Tr.en; clicked => { S.set-lang(true); } }
+                }
+            }
+        }
+        VerticalLayout {
+            padding: 24px;
+            spacing: 12px;
+            if S.page == "welcome": Welcome { vertical-stretch: 1; }
+            if S.page == "target": TargetPage {}
+            if S.page == "server": ServerPage {}
+            if S.page == "sources": SourcesPage {}
+            if S.page == "telegram": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; TelegramPage {} } }
+            if S.page == "github": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; GithubPage {} } }
+            if S.page == "steam": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; SteamPage {} } }
+            if S.page == "games": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; GamesPage {} } }
+            if S.page == "notify": NotifyPage {}
+            if S.page == "summary": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; SummaryPage {} } }
+            if S.page == "progress": ProgressPage { vertical-stretch: 1; }
+            if S.page == "connect": ScrollView { vertical-stretch: 1; VerticalLayout { padding-right: 12px; ConnectPage {} } }
+            if S.page == "manage": ManagePage { vertical-stretch: 1; }
+            if S.page != "welcome" && S.page != "progress" && S.page != "manage": Rectangle { vertical-stretch: 1; }
+            if S.error != "": Text { text: S.error; color: #dc2626; wrap: word-wrap; }
+            if S.info != "": Text { text: S.info; wrap: word-wrap; opacity: 0.8; }
+            if S.page != "welcome" && S.page != "progress" && S.page != "manage" && S.page != "connect": HorizontalLayout {
+                spacing: 10px;
+                Button { text: Tr.t("‹ Назад", "‹ Back"); enabled: !S.busy; clicked => { S.back(); } }
+                Rectangle { horizontal-stretch: 1; }
+                if S.busy: Spinner { indeterminate: true; width: 24px; height: 24px; }
+                if S.page != "summary": Button { text: Tr.t("Далее ›", "Next ›"); primary: true; enabled: !S.busy; clicked => { S.next(); } }
+                if S.page == "summary": Button { text: Tr.t("Установить", "Install"); primary: true; enabled: !S.busy; clicked => { S.install(); } }
+            }
+            if S.page == "connect" || S.page == "manage": HorizontalLayout {
+                Button { text: Tr.t("‹ В начало", "‹ Start page"); enabled: !S.busy; clicked => { S.go("welcome"); } }
+                Rectangle { horizontal-stretch: 1; }
+                if S.busy: Spinner { indeterminate: true; width: 24px; height: 24px; }
+            }
+        }
+    }
+
+    if S.hk-show: Rectangle {
+        background: #000a;
+        TouchArea {}
+        Rectangle {
+            width: 520px;
+            height: dlg.preferred-height;
+            border-radius: 10px;
+            background: #f8fafc;
+            dlg := VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                Text { text: Tr.t("Ключ сервера", "Server key"); font-size: 18px; font-weight: 700; color: #0f172a; }
+                Text { text: S.hk-text; wrap: word-wrap; color: #0f172a; }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    Button { text: Tr.t("Отмена", "Cancel"); clicked => { S.hk-reject(); } }
+                    Button { text: Tr.t("Доверять", "Trust"); primary: true; clicked => { S.hk-accept(); } }
+                }
+            }
+        }
+    }
+}

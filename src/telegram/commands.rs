@@ -8,27 +8,61 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio::sync::mpsc;
 
-use super::api::{Message, TgError, Update};
+use super::api::{CallbackQuery, Message, TgError, Update};
+use super::menu::{self, Action, Avail, Prompt, View};
 use crate::app::App;
 use crate::event::Event;
 use crate::text::{escape_html, external_html};
 
 const STALE_AFTER: i64 = 300;
+const PROMPT_TTL: i64 = 600;
 
-pub const COMMANDS: &[(&str, &str)] = &[
-    ("help", "список команд"),
-    ("status", "состояние бота и источников"),
-    ("sources", "что отслеживается"),
-    ("pause", "пауза уведомлений, например /pause 2h"),
-    ("resume", "снять паузу"),
-    ("check_now", "проверить сейчас: github, guides или games"),
-    ("reload", "перечитать конфиг"),
-    ("strangers", "посторонние за 7 дней"),
-];
+/// Command menu in the current language.
+pub fn commands() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "settings",
+            crate::tr!("настройки с кнопками", "settings with buttons"),
+        ),
+        (
+            "status",
+            crate::tr!("состояние бота и источников", "bot and source state"),
+        ),
+        (
+            "sources",
+            crate::tr!("что отслеживается", "what is watched"),
+        ),
+        (
+            "pause",
+            crate::tr!(
+                "пауза уведомлений, например /pause 2h",
+                "pause notifications, e.g. /pause 2h"
+            ),
+        ),
+        ("resume", crate::tr!("снять паузу", "resume notifications")),
+        (
+            "check_now",
+            crate::tr!(
+                "проверить сейчас: github, guides или games",
+                "check now: github, guides or games"
+            ),
+        ),
+        (
+            "reload",
+            crate::tr!("перечитать конфиг", "re-read the config file"),
+        ),
+        (
+            "strangers",
+            crate::tr!("посторонние за 7 дней", "strangers in the last 7 days"),
+        ),
+        ("help", crate::tr!("список команд", "list of commands")),
+    ]
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Help,
+    Settings,
     Status,
     Sources,
     Pause(Option<i64>),
@@ -95,18 +129,25 @@ pub fn parse_command(text: &str) -> Result<Command, ParseError> {
         .to_ascii_lowercase();
     let args: Vec<&str> = parts.collect();
     if args.len() > 1 {
-        return Err(ParseError::BadArgs("слишком много аргументов"));
+        return Err(ParseError::BadArgs(crate::tr!(
+            "слишком много аргументов",
+            "too many arguments"
+        )));
     }
     let arg = args.first().copied();
     let no_args = |c: Command| {
         if arg.is_some() {
-            Err(ParseError::BadArgs("команда без аргументов"))
+            Err(ParseError::BadArgs(crate::tr!(
+                "команда без аргументов",
+                "the command takes no arguments"
+            )))
         } else {
             Ok(c)
         }
     };
     match name.as_str() {
         "start" | "help" => no_args(Command::Help),
+        "settings" => no_args(Command::Settings),
         "status" => no_args(Command::Status),
         "sources" => no_args(Command::Sources),
         "resume" => no_args(Command::Resume),
@@ -117,9 +158,10 @@ pub fn parse_command(text: &str) -> Result<Command, ParseError> {
             Some(a) => {
                 parse_duration(a)
                     .map(|d| Command::Pause(Some(d)))
-                    .ok_or(ParseError::BadArgs(
+                    .ok_or(ParseError::BadArgs(crate::tr!(
                         "длительность вида 30m, 2h, 1d, 1w или 1h30m, не больше года",
-                    ))
+                        "a duration like 30m, 2h, 1d, 1w or 1h30m, at most a year"
+                    )))
             }
         },
         "check_now" => match arg.map(str::to_ascii_lowercase).as_deref() {
@@ -127,15 +169,18 @@ pub fn parse_command(text: &str) -> Result<Command, ParseError> {
             Some("github") => Ok(Command::CheckNow(Some(Target::Github))),
             Some("guides") => Ok(Command::CheckNow(Some(Target::Guides))),
             Some("games") => Ok(Command::CheckNow(Some(Target::Games))),
-            Some(_) => Err(ParseError::BadArgs("источник: github, guides или games")),
+            Some(_) => Err(ParseError::BadArgs(crate::tr!(
+                "источник: github, guides или games",
+                "source: github, guides or games"
+            ))),
         },
         _ => Err(ParseError::Unknown),
     }
 }
 
 fn help_text() -> String {
-    let mut s = String::from("<b>Команды</b>");
-    for (c, d) in COMMANDS {
+    let mut s = String::from(crate::tr!("<b>Команды</b>", "<b>Commands</b>"));
+    for (c, d) in commands() {
         let _ = write!(s, "\n/{c}: {}", escape_html(d));
     }
     s
@@ -152,6 +197,7 @@ pub struct StrangerHit {
 pub struct Poller {
     app: Arc<App>,
     last_check: std::collections::HashMap<&'static str, i64>,
+    awaiting: Option<(Prompt, i64)>,
 }
 
 impl Poller {
@@ -159,6 +205,272 @@ impl Poller {
         Self {
             app,
             last_check: std::collections::HashMap::new(),
+            awaiting: None,
+        }
+    }
+
+    fn admin(&self) -> i64 {
+        self.app.secrets.telegram_admin_id
+    }
+
+    fn avail(&self) -> Avail {
+        Avail {
+            github: self.app.github.is_some(),
+            guides: self.app.secrets.steam_profile_id.is_some(),
+        }
+    }
+
+    async fn repo_names(&self) -> Result<Vec<String>> {
+        Ok(self
+            .app
+            .db
+            .repos()
+            .await?
+            .into_iter()
+            .map(|r| r.full_name)
+            .collect())
+    }
+
+    async fn screen(&self, v: View) -> Result<(String, super::api::Keyboard)> {
+        let repos = if matches!(v, View::Repos(_)) {
+            self.repo_names().await?
+        } else {
+            Vec::new()
+        };
+        let s = crate::settings::current();
+        Ok(menu::render(v, &s, self.avail(), &repos))
+    }
+
+    async fn show_menu(&self, v: View) -> Result<()> {
+        let (html, kb) = self.screen(v).await?;
+        match self.app.telegram.send_menu(self.admin(), &html, &kb).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                tracing::warn!(error = %e, "menu not sent");
+                Ok(())
+            }
+        }
+    }
+
+    async fn edit_menu(&self, message_id: i64, v: View) -> Result<()> {
+        let (html, kb) = self.screen(v).await?;
+        if let Err(e) = self
+            .app
+            .telegram
+            .edit_menu(self.admin(), message_id, &html, &kb)
+            .await
+        {
+            tracing::warn!(error = %e, "menu not updated");
+        }
+        Ok(())
+    }
+
+    async fn on_callback(&mut self, q: CallbackQuery) -> Result<()> {
+        let admin = self.admin();
+        let in_admin_chat = q.message.as_ref().is_some_and(|m| m.chat.id == admin);
+        if q.from.id != admin || !in_admin_chat {
+            let _ = self.app.telegram.answer_callback(&q.id, None).await;
+            return Ok(());
+        }
+        let Some(msg) = q.message else { return Ok(()) };
+        let action = q.data.as_deref().and_then(menu::parse);
+        let mut note = None;
+        let next = match action {
+            None => Some(View::Main),
+            Some(Action::Show(v)) => Some(v),
+            Some(Action::Toggle(key)) => {
+                let mut target = None;
+                self.app
+                    .update_settings(|s| target = menu::toggle(s, &key))
+                    .await?;
+                Some(target.unwrap_or(View::Main))
+            }
+            Some(Action::Repo(page, idx)) => {
+                let repos = self.repo_names().await?;
+                self.app
+                    .update_settings(|s| {
+                        menu::toggle_repo(s, &repos, page, idx);
+                    })
+                    .await?;
+                Some(View::Repos(page))
+            }
+            Some(Action::Ask(p)) => {
+                self.awaiting = Some((p, crate::now() + PROMPT_TTL));
+                let _ = self
+                    .app
+                    .telegram
+                    .send_plain(admin, menu::prompt_text(p))
+                    .await;
+                None
+            }
+            Some(Action::RemoveGame(id)) => {
+                self.app
+                    .update_settings(|s| s.games.list.retain(|g| g.appid != id))
+                    .await?;
+                note = Some(crate::tr!("Игра убрана", "Game removed"));
+                Some(View::Games)
+            }
+            Some(Action::PickGame(id)) => {
+                note = Some(self.add_game(id, None).await?);
+                Some(View::Games)
+            }
+            Some(Action::Leave(id)) => {
+                match self.app.telegram.leave_chat(id).await {
+                    Ok(_) | Err(TgError::Blocked(_)) => {}
+                    Err(e) => tracing::warn!(error = %e, "leaveChat failed"),
+                }
+                self.forget_chat(id).await?;
+                Some(View::Chats)
+            }
+            Some(Action::Close) => {
+                let _ = self
+                    .app
+                    .telegram
+                    .edit_menu(
+                        admin,
+                        msg.message_id,
+                        crate::tr!("Настройки закрыты.", "Settings closed."),
+                        &Vec::new(),
+                    )
+                    .await;
+                None
+            }
+        };
+        let _ = self.app.telegram.answer_callback(&q.id, note).await;
+        if let Some(v) = next {
+            self.edit_menu(msg.message_id, v).await?;
+        }
+        Ok(())
+    }
+
+    async fn forget_chat(&self, id: i64) -> Result<()> {
+        self.app
+            .update_settings(|s| s.chats.retain(|c| c.id != id))
+            .await?;
+        self.app.db.drop_chat(id).await
+    }
+
+    /// Adds a game by `AppID`; the name comes from Steam unless given.
+    async fn add_game(&self, appid: u32, name: Option<String>) -> Result<&'static str> {
+        let s = crate::settings::current();
+        if s.game(appid).is_some() {
+            return Ok(crate::tr!(
+                "Эта игра уже в списке",
+                "This game is already listed"
+            ));
+        }
+        if s.games.list.len() >= crate::settings::MAX_GAMES {
+            return Ok(crate::tr!("Список игр заполнен", "The game list is full"));
+        }
+        let name = match name {
+            Some(n) => n,
+            None => crate::steam::store::name(&self.app.http, appid)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+        };
+        self.app
+            .update_settings(|s| {
+                s.games.list.push(crate::settings::Game::new(appid, &name));
+                s.games.enabled = true;
+            })
+            .await?;
+        Ok(crate::tr!(
+            "Игра добавлена, первая проверка запущена",
+            "Game added, the first check has started"
+        ))
+    }
+
+    /// Text sent after a button asked for input.
+    async fn on_input(&mut self, prompt: Prompt, text: &str) -> Result<String> {
+        match prompt {
+            Prompt::AddGame => {
+                if let Some(id) = crate::steam::store::parse_appid(text) {
+                    let note = self.add_game(id, None).await?;
+                    self.show_menu(View::Games).await?;
+                    return Ok(note.to_owned());
+                }
+                let found = match crate::steam::store::search(&self.app.http, text).await {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "store search failed");
+                        return Ok(crate::tr!(
+                            "Поиск в Steam не ответил. Попробуйте ещё раз или пришлите AppID.",
+                            "Steam search did not answer. Try again or send the AppID."
+                        )
+                        .to_owned());
+                    }
+                };
+                if found.is_empty() {
+                    self.awaiting = Some((Prompt::AddGame, crate::now() + PROMPT_TTL));
+                    return Ok(crate::tr!(
+                        "Ничего не найдено. Пришлите другое название, ссылку или AppID.",
+                        "Nothing found. Send another name, a link or the AppID."
+                    )
+                    .to_owned());
+                }
+                let kb: super::api::Keyboard = found
+                    .iter()
+                    .map(|f| {
+                        let label: String = format!("{} ({})", f.name, f.appid)
+                            .chars()
+                            .take(60)
+                            .collect();
+                        vec![(label, format!("pick:{}", f.appid))]
+                    })
+                    .chain(std::iter::once(vec![(
+                        crate::tr!("Отмена", "Cancel").to_owned(),
+                        "m:gm".to_owned(),
+                    )]))
+                    .collect();
+                let _ = self
+                    .app
+                    .telegram
+                    .send_menu(
+                        self.admin(),
+                        crate::tr!("Выберите игру:", "Choose the game:"),
+                        &kb,
+                    )
+                    .await;
+                Ok(String::new())
+            }
+            Prompt::QuietHours => {
+                if let Some((a, z)) = menu::parse_window(text) {
+                    self.app
+                        .update_settings(|s| {
+                            s.quiet_hours.start = a;
+                            s.quiet_hours.end = z;
+                            s.quiet_hours.enabled = true;
+                        })
+                        .await?;
+                    self.show_menu(View::Quiet).await?;
+                    Ok(String::new())
+                } else {
+                    self.awaiting = Some((Prompt::QuietHours, crate::now() + PROMPT_TTL));
+                    Ok(crate::tr!(
+                        "Не понял. Нужно окно вида 22:00-08:00.",
+                        "Not understood. A window like 22:00-08:00 is needed."
+                    )
+                    .to_owned())
+                }
+            }
+            Prompt::Timezone => {
+                let tz = text.trim();
+                if tz.len() <= 64 && jiff::tz::TimeZone::get(tz).is_ok() {
+                    let tz = tz.to_owned();
+                    self.app.update_settings(|s| s.timezone = tz).await?;
+                    self.show_menu(View::Quiet).await?;
+                    Ok(String::new())
+                } else {
+                    self.awaiting = Some((Prompt::Timezone, crate::now() + PROMPT_TTL));
+                    Ok(crate::tr!(
+                        "Такого часового пояса нет. Пример: Europe/Moscow.",
+                        "Unknown time zone. Example: Europe/Berlin."
+                    )
+                    .to_owned())
+                }
+            }
         }
     }
 
@@ -171,7 +483,79 @@ impl Poller {
         Ok(())
     }
 
-    async fn on_group(
+    /// The bot was put into a group or channel. Only the admin may do that.
+    async fn on_joined(&self, chat: &super::api::Chat, by: &super::api::User) -> Result<()> {
+        if by.id != self.admin() {
+            return self
+                .leave_foreign(chat.id, chat.title.as_deref(), &chat.kind, Some(by))
+                .await;
+        }
+        let title = crate::text::clean_line(chat.title.as_deref().unwrap_or("-"), 100);
+        let kind = chat.kind.clone();
+        let id = chat.id;
+        let known = crate::settings::current().chats.iter().any(|c| c.id == id);
+        if !known {
+            let full = crate::settings::current().chats.len() >= crate::settings::MAX_CHATS;
+            if full {
+                let _ = self.app.telegram.leave_chat(id).await;
+                let ev = Event::service(
+                    format!("bot:chats_full:{id}"),
+                    crate::tr!("Слишком много чатов", "Too many chats"),
+                    crate::tr!(
+                        "Бот уже работает в 20 группах и каналах и вышел из нового. Уберите лишние в /settings.",
+                        "The bot already serves 20 groups and channels and left the new one. Remove some in /settings."
+                    ),
+                );
+                self.app.db.enqueue(&ev).await?;
+                return Ok(());
+            }
+            self.app
+                .update_settings(|s| {
+                    s.chats.push(crate::settings::Chat {
+                        id,
+                        title: title.clone(),
+                        kind,
+                        delivery: crate::settings::Delivery::default(),
+                    });
+                })
+                .await?;
+        }
+        let ev = Event::service(
+            format!("bot:joined:{id}:{}", crate::now() / 60),
+            crate::tr!("Бот добавлен в чат", "Bot added to a chat"),
+            crate::trf!(
+                "«{title}»: сюда будут приходить уведомления. Что именно присылать, выберите в /settings, раздел «Куда слать».",
+                "\"{title}\": notifications will be sent there. Choose which ones in /settings, section \"Delivery\"."
+            ),
+        );
+        self.app.db.enqueue(&ev).await?;
+        self.app.outbox_signal.notify_one();
+        Ok(())
+    }
+
+    async fn on_removed(&self, chat: &super::api::Chat) -> Result<()> {
+        let known = crate::settings::current()
+            .chats
+            .iter()
+            .any(|c| c.id == chat.id);
+        if !known {
+            return Ok(());
+        }
+        self.forget_chat(chat.id).await?;
+        let title = crate::text::clean_line(chat.title.as_deref().unwrap_or("-"), 100);
+        let ev = Event::service(
+            format!("bot:removed:{}:{}", chat.id, crate::now() / 60),
+            crate::tr!("Бот убран из чата", "Bot removed from a chat"),
+            crate::trf!(
+                "«{title}»: бот больше не может туда писать, чат удалён из списка доставки.",
+                "\"{title}\": the bot can no longer post there, the chat was removed from delivery."
+            ),
+        );
+        self.app.db.enqueue(&ev).await?;
+        Ok(())
+    }
+
+    async fn leave_foreign(
         &self,
         chat_id: i64,
         title: Option<&str>,
@@ -183,25 +567,27 @@ impl Poller {
             Err(e) => tracing::warn!(error = %e, "leaveChat failed"),
         }
         let who = by.map_or_else(String::new, |u| {
-            format!(
-                " Добавил: {} (ID {}).",
-                u.username.as_deref().map_or_else(
-                    || "без имени пользователя".to_owned(),
-                    |n| format!("@{}", crate::text::clean_line(n, 64))
-                ),
-                u.id
+            let name = u.username.as_deref().map_or_else(
+                || crate::tr!("без имени пользователя", "no username").to_owned(),
+                |n| format!("@{}", crate::text::clean_line(n, 64)),
+            );
+            let id = u.id;
+            crate::trf!(
+                " Добавил: {name} (ID {id}).",
+                " Added by: {name} (ID {id})."
             )
         });
+        let place = match kind {
+            "channel" => crate::tr!("канал", "channel"),
+            _ => crate::tr!("группу", "group"),
+        };
+        let title = crate::text::clean_line(title.unwrap_or("-"), 100);
         let ev = Event::service(
             format!("bot:left:{chat_id}:{}", crate::now() / 60),
-            "Бот вышел из чата",
-            format!(
-                "Бота добавили в {} «{}», он сразу вышел.{who}",
-                match kind {
-                    "channel" => "канал",
-                    _ => "группу",
-                },
-                crate::text::clean_line(title.unwrap_or("без названия"), 100)
+            crate::tr!("Бот вышел из чата", "Bot left a chat"),
+            crate::trf!(
+                "Бота добавили в {place} «{title}», он сразу вышел: добавлять его может только владелец.{who}",
+                "The bot was added to the {place} \"{title}\" and left at once: only the owner may add it.{who}"
             ),
         );
         self.app.db.enqueue(&ev).await?;
@@ -209,37 +595,44 @@ impl Poller {
     }
 
     async fn handle(&mut self, u: Update) -> Result<()> {
+        if let Some(q) = u.callback_query {
+            return self.on_callback(q).await;
+        }
         if let Some(m) = &u.my_chat_member {
-            if m.chat.kind != "private"
-                && matches!(
-                    m.new_chat_member.status.as_str(),
-                    "member" | "administrator" | "restricted"
-                )
-            {
-                self.on_group(
-                    m.chat.id,
-                    m.chat.title.as_deref(),
-                    &m.chat.kind,
-                    Some(&m.from),
-                )
-                .await?;
+            if m.chat.kind != "private" {
+                match m.new_chat_member.status.as_str() {
+                    "member" | "administrator" | "restricted" => {
+                        self.on_joined(&m.chat, &m.from).await?;
+                    }
+                    "left" | "kicked" => self.on_removed(&m.chat).await?,
+                    _ => {}
+                }
             }
             return Ok(());
         }
         let Some(msg) = u.message else { return Ok(()) };
         if msg.chat.kind != "private" {
-            self.on_group(
-                msg.chat.id,
-                msg.chat.title.as_deref(),
-                &msg.chat.kind,
-                msg.from.as_ref(),
-            )
-            .await?;
+            if let Some(to) = msg.migrate_to_chat_id {
+                return self.app.move_chat(msg.chat.id, to).await;
+            }
+            let known = crate::settings::current()
+                .chats
+                .iter()
+                .any(|c| c.id == msg.chat.id);
+            if !known {
+                self.leave_foreign(
+                    msg.chat.id,
+                    msg.chat.title.as_deref(),
+                    &msg.chat.kind,
+                    msg.from.as_ref(),
+                )
+                .await?;
+            }
             return Ok(());
         }
         let Some(from) = &msg.from else { return Ok(()) };
         let stale = crate::now() - msg.date > STALE_AFTER;
-        if from.id != self.app.secrets.telegram_admin_id || msg.chat.id != from.id {
+        if from.id != self.admin() || msg.chat.id != from.id {
             let tx = self
                 .app
                 .stranger_tx
@@ -265,7 +658,14 @@ impl Poller {
                 .as_deref()
                 .is_some_and(|t| t.trim_start().starts_with('/'))
             {
-                self.reply(u.update_id, "Команда устарела (отправлена больше 5 минут назад) и не выполнена. Повторите её.").await?;
+                self.reply(
+                    u.update_id,
+                    crate::tr!(
+                        "Команда устарела (отправлена больше 5 минут назад) и не выполнена. Повторите её.",
+                        "The command is stale (sent more than 5 minutes ago) and was not run. Send it again."
+                    ),
+                )
+                .await?;
             }
             return Ok(());
         }
@@ -275,23 +675,43 @@ impl Poller {
     async fn admin_message(&mut self, update_id: i64, msg: &Message) -> Result<()> {
         let text = msg.text.as_deref().unwrap_or_default();
         let cmd = match parse_command(text) {
-            Ok(c) => c,
+            Ok(c) => {
+                self.awaiting = None;
+                c
+            }
             Err(ParseError::BadArgs(why)) => {
+                let why = escape_html(why);
+                let help = help_text();
                 return self
                     .reply(
                         update_id,
-                        &format!(
-                            "Неверные аргументы: {}.\n\n{}",
-                            escape_html(why),
-                            help_text()
+                        &crate::trf!(
+                            "Неверные аргументы: {why}.\n\n{help}",
+                            "Wrong arguments: {why}.\n\n{help}"
                         ),
                     )
                     .await;
             }
-            Err(_) => return self.reply(update_id, &help_text()).await,
+            Err(ParseError::NotACommand) => {
+                if let Some((p, until)) = self.awaiting.take() {
+                    if until >= crate::now() && !text.trim().is_empty() {
+                        let answer = self.on_input(p, text).await?;
+                        if answer.is_empty() {
+                            return Ok(());
+                        }
+                        return self.reply(update_id, &escape_html(&answer)).await;
+                    }
+                }
+                return self.reply(update_id, &help_text()).await;
+            }
+            Err(ParseError::Unknown) => return self.reply(update_id, &help_text()).await,
         };
         let answer = match cmd {
             Command::Help => help_text(),
+            Command::Settings => {
+                self.show_menu(View::Main).await?;
+                return Ok(());
+            }
             Command::Status => self.status().await?,
             Command::Sources => self.sources().await?,
             Command::Pause(d) => {
@@ -299,12 +719,19 @@ impl Poller {
                     d.map_or_else(|| "forever".to_owned(), |d| (crate::now() + d).to_string());
                 self.app.db.meta_set("paused_until", &value).await?;
                 match d {
-                    Some(d) => format!(
-                        "Пауза до {} ({}). События собираются и придут после паузы.",
-                        crate::fmt_time(crate::now() + d),
-                        crate::fmt_duration(d)
-                    ),
-                    None => "Пауза без срока. События собираются, снять паузу: /resume.".to_owned(),
+                    Some(d) => {
+                        let (until, len) =
+                            (crate::fmt_time(crate::now() + d), crate::fmt_duration(d));
+                        crate::trf!(
+                            "Пауза до {until} ({len}). События собираются и придут после паузы.",
+                            "Paused until {until} ({len}). Events are collected and arrive after the pause."
+                        )
+                    }
+                    None => crate::tr!(
+                        "Пауза без срока. События собираются, снять паузу: /resume.",
+                        "Paused without a time limit. Events are collected, resume with /resume."
+                    )
+                    .to_owned(),
                 }
             }
             Command::Resume => {
@@ -312,9 +739,12 @@ impl Poller {
                 self.app.db.meta_del("paused_until").await?;
                 let pending = self.app.db.pending_count().await?;
                 if was {
-                    format!("Пауза снята. В очереди: {pending}.")
+                    crate::trf!(
+                        "Пауза снята. В очереди: {pending}.",
+                        "Resumed. Queued: {pending}."
+                    )
                 } else {
-                    "Паузы не было.".to_owned()
+                    crate::tr!("Паузы не было.", "There was no pause.").to_owned()
                 }
             }
             Command::CheckNow(t) => self.check_now(t),
@@ -335,8 +765,16 @@ impl Poller {
         for t in targets {
             let (key, name, notify) = match t {
                 Target::Github => ("github", "GitHub", &self.app.check_now.github),
-                Target::Guides => ("guides", "руководства", &self.app.check_now.guides),
-                Target::Games => ("games", "игры", &self.app.check_now.games),
+                Target::Guides => (
+                    "guides",
+                    crate::tr!("руководства", "guides"),
+                    &self.app.check_now.guides,
+                ),
+                Target::Games => (
+                    "games",
+                    crate::tr!("игры", "games"),
+                    &self.app.check_now.games,
+                ),
             };
             let last = self.last_check.get(key).copied().unwrap_or(0);
             if now - last < 60 {
@@ -349,102 +787,183 @@ impl Poller {
         }
         let mut s = String::new();
         if !started.is_empty() {
-            let _ = write!(s, "Проверка запущена: {}.", started.join(", "));
+            let list = started.join(", ");
+            s.push_str(&crate::trf!(
+                "Проверка запущена: {list}.",
+                "Check started: {list}."
+            ));
         }
         if !skipped.is_empty() {
-            let _ = write!(
-                s,
-                "{}Не чаще раза в минуту, пропущено: {}.",
-                if s.is_empty() { "" } else { "\n" },
-                skipped.join(", ")
-            );
+            let list = skipped.join(", ");
+            if !s.is_empty() {
+                s.push('\n');
+            }
+            s.push_str(&crate::trf!(
+                "Не чаще раза в минуту, пропущено: {list}.",
+                "At most once a minute, skipped: {list}."
+            ));
         }
         s
     }
 
     async fn status(&self) -> Result<String> {
-        let cfg = self.app.cfg();
+        let st = crate::settings::current();
         let now = crate::now();
-        let mut s = format!(
-            "<b>Статус</b>\nВерсия: {} ({})\nРаботает: {}",
-            env!("CARGO_PKG_VERSION"),
-            escape_html(option_env!("HQW_COMMIT").unwrap_or("dev")),
-            crate::fmt_duration(now - self.app.health.started())
+        let version = env!("CARGO_PKG_VERSION");
+        let commit = escape_html(option_env!("HQW_COMMIT").unwrap_or("dev"));
+        let up = crate::fmt_duration(now - self.app.health.started());
+        let mut s = crate::trf!(
+            "<b>Статус</b>\nВерсия: {version} ({commit})\nРаботает: {up}",
+            "<b>Status</b>\nVersion: {version} ({commit})\nUptime: {up}"
         );
         let pause = match super::sender::pause_state(&self.app).await? {
-            None => "нет".to_owned(),
-            Some(None) => "без срока".to_owned(),
-            Some(Some(t)) => format!("до {}", crate::fmt_time(t)),
+            None => crate::tr!("нет", "no").to_owned(),
+            Some(None) => crate::tr!("без срока", "without a time limit").to_owned(),
+            Some(Some(t)) => crate::trf!("до {}", "until {}", crate::fmt_time(t)),
         };
-        let quiet = super::sender::is_quiet(&cfg.quiet_hours, now, &cfg.timezone);
+        let quiet = if super::sender::is_quiet(&st.quiet(), now, &st.tz()) {
+            crate::tr!("сейчас активны", "active now")
+        } else {
+            crate::tr!("сейчас нет", "not now")
+        };
+        let queue = self.app.db.pending_count().await?;
+        let mode = match self.app.cfg().github.mode {
+            crate::config::GithubMode::Webhook => crate::tr!("вебхук", "webhook"),
+            crate::config::GithubMode::Polling => crate::tr!("опрос", "polling"),
+        };
         let _ = write!(
             s,
-            "\nПауза: {pause}\nОчередь: {}\nТихие часы: {}",
-            self.app.db.pending_count().await?,
-            if quiet {
-                "сейчас активны"
-            } else {
-                "сейчас нет"
-            }
+            "{}",
+            crate::trf!(
+                "\nПауза: {pause}\nОчередь: {queue}\nТихие часы: {quiet}\nGitHub: {mode}",
+                "\nPause: {pause}\nQueue: {queue}\nQuiet hours: {quiet}\nGitHub: {mode}"
+            )
         );
-        s.push_str("\n\n<b>Источники</b>");
+        s.push_str(crate::tr!("\n\n<b>Источники</b>", "\n\n<b>Sources</b>"));
         let snap = self.app.health.snapshot();
-        for (name, title) in crate::health::SUBSYSTEMS {
-            let st = snap.get(name).cloned().unwrap_or_default();
-            let ok = st
-                .last_success
-                .map_or_else(|| "ещё не было".to_owned(), crate::fmt_time);
-            let _ = write!(s, "\n{}: успех {ok}", escape_html(title));
-            if let Some((t, e)) = &st.last_error {
+        for name in crate::health::SUBSYSTEMS {
+            let Some(state) = snap.get(name) else {
+                continue;
+            };
+            let ok = state.last_success.map_or_else(
+                || crate::tr!("ещё не было", "not yet").to_owned(),
+                crate::fmt_time,
+            );
+            let title = escape_html(crate::health::title(name));
+            let _ = write!(
+                s,
+                "{}",
+                crate::trf!("\n{title}: успех {ok}", "\n{title}: success {ok}")
+            );
+            if let Some((t, e)) = &state.last_error {
+                let (when, what) = (
+                    crate::fmt_time(*t),
+                    external_html(&crate::text::truncate_chars(e, 200)),
+                );
                 let _ = write!(
                     s,
-                    "; ошибка {}: {}",
-                    crate::fmt_time(*t),
-                    external_html(&crate::text::truncate_chars(e, 200))
+                    "{}",
+                    crate::trf!("; ошибка {when}: {what}", "; error {when}: {what}")
                 );
             }
-            if st.alerted {
-                s.push_str(" [сбой]");
+            if state.alerted {
+                s.push_str(crate::tr!(" [сбой]", " [failing]"));
             }
         }
         Ok(s)
     }
 
     async fn sources(&self) -> Result<String> {
-        let mut s = String::from("<b>Репозитории GitHub</b>");
-        let repos = self.app.db.repos().await?;
-        if repos.is_empty() {
-            s.push_str("\nпока нет");
+        let st = crate::settings::current();
+        let none = crate::tr!("\nпока нет", "\nnone yet");
+        let mut s = String::from(crate::tr!(
+            "<b>Репозитории GitHub</b>",
+            "<b>GitHub repositories</b>"
+        ));
+        if self.app.github.is_none() {
+            s.push_str(crate::tr!("\nне настроено", "\nnot configured"));
+        } else {
+            let repos = self.app.db.repos().await?;
+            if repos.is_empty() {
+                s.push_str(none);
+            }
+            for r in &repos {
+                let excluded = st
+                    .github
+                    .excluded_repos
+                    .iter()
+                    .any(|x| x.eq_ignore_ascii_case(&r.full_name));
+                let _ = write!(
+                    s,
+                    "\n<code>{}</code>{}{}",
+                    escape_html(&r.full_name),
+                    if r.private {
+                        crate::tr!(" (приватный)", " (private)")
+                    } else {
+                        ""
+                    },
+                    if excluded {
+                        crate::tr!(" [исключён]", " [excluded]")
+                    } else {
+                        ""
+                    }
+                );
+            }
         }
-        for r in &repos {
-            let _ = write!(
-                s,
-                "\n<code>{}</code>{}",
-                escape_html(&r.full_name),
-                if r.private {
-                    " (приватный)"
-                } else {
-                    ""
-                }
-            );
+        s.push_str(crate::tr!(
+            "\n\n<b>Руководства Steam</b>",
+            "\n\n<b>Steam guides</b>"
+        ));
+        if self.app.secrets.steam_profile_id.is_none() {
+            s.push_str(crate::tr!("\nне настроено", "\nnot configured"));
+        } else {
+            let guides = self.app.db.guides().await?;
+            if guides.is_empty() {
+                s.push_str(none);
+            }
+            for g in &guides {
+                let (t, game, n) = (
+                    external_html(&g.title),
+                    external_html(&g.game),
+                    g.comment_count.max(0),
+                );
+                let _ = write!(
+                    s,
+                    "{}",
+                    crate::trf!(
+                        "\n{t} ({game}, комментариев: {n})",
+                        "\n{t} ({game}, comments: {n})"
+                    )
+                );
+            }
         }
-        s.push_str("\n\n<b>Руководства Steam</b>");
-        let guides = self.app.db.guides().await?;
-        if guides.is_empty() {
-            s.push_str("\nпока нет");
+        s.push_str(crate::tr!(
+            "\n\n<b>Игры Steam</b>",
+            "\n\n<b>Steam games</b>"
+        ));
+        if st.games.list.is_empty() {
+            s.push_str(none);
         }
-        for g in &guides {
-            let _ = write!(
-                s,
-                "\n{} ({}, комментариев: {})",
-                external_html(&g.title),
-                external_html(&g.game),
-                g.comment_count.max(0)
-            );
-        }
-        s.push_str("\n\n<b>Игры Steam</b>");
-        for (appid, _, state) in self.app.db.games().await? {
-            let Ok(st) = serde_json::from_str::<crate::steam::games::GameState>(&state) else {
+        let states: std::collections::BTreeMap<i64, String> = self
+            .app
+            .db
+            .games()
+            .await?
+            .into_iter()
+            .map(|(id, _, state)| (id, state))
+            .collect();
+        for g in &st.games.list {
+            let appid = g.appid;
+            let st = states
+                .get(&i64::from(appid))
+                .and_then(|x| serde_json::from_str::<crate::steam::games::GameState>(x).ok());
+            let Some(st) = st else {
+                let _ = write!(
+                    s,
+                    "\n<b>{}</b> ({appid}){}",
+                    external_html(&g.label()),
+                    crate::tr!(", ещё не проверялась", ", not checked yet")
+                );
                 continue;
             };
             let public = st
@@ -466,7 +985,7 @@ impl Poller {
                         "{n} {}{}",
                         b.buildid,
                         if b.password {
-                            " (с паролем)"
+                            crate::tr!(" (с паролем)", " (password)")
                         } else {
                             ""
                         }
@@ -474,7 +993,15 @@ impl Poller {
                 })
                 .collect();
             if !others.is_empty() {
-                let _ = write!(s, "\n  ветки: {}", external_html(&others.join(", ")));
+                let _ = write!(
+                    s,
+                    "{}",
+                    crate::trf!(
+                        "\n  ветки: {}",
+                        "\n  branches: {}",
+                        external_html(&others.join(", "))
+                    )
+                );
             }
             let dlcs: Vec<String> = st
                 .dlcs
@@ -489,7 +1016,7 @@ impl Poller {
         if crate::telegram::render::visible_len(&s) > crate::telegram::render::MAX_MESSAGE {
             s = crate::text::truncate_chars(&s, 3500);
             s = s.rsplit_once('\n').map_or(s.clone(), |(a, _)| a.to_owned());
-            s.push_str("\n…список обрезан");
+            s.push_str(crate::tr!("\n…список обрезан", "\n…list truncated"));
         }
         Ok(s)
     }
@@ -501,21 +1028,34 @@ impl Poller {
             .strangers_since(crate::now() - 7 * 86_400)
             .await?;
         if rows.is_empty() {
-            return Ok("Посторонние за 7 дней не писали.".to_owned());
+            return Ok(crate::tr!(
+                "Посторонние за 7 дней не писали.",
+                "No strangers wrote in the last 7 days."
+            )
+            .to_owned());
         }
-        let mut s = String::from("<b>Посторонние за 7 дней</b>");
+        let mut s = String::from(crate::tr!(
+            "<b>Посторонние за 7 дней</b>",
+            "<b>Strangers in the last 7 days</b>"
+        ));
         for r in rows.iter().take(50) {
-            let name = r
-                .username
-                .as_deref()
-                .map_or_else(|| "без имени".to_owned(), |n| format!("@{n}"));
-            let _ = write!(
-                s,
-                "\nID {}, {}, попыток: {}, последняя: {}",
+            let name = r.username.as_deref().map_or_else(
+                || crate::tr!("без имени", "no username").to_owned(),
+                |n| format!("@{n}"),
+            );
+            let (id, name, n, last) = (
                 r.user_id,
                 external_html(&name),
                 r.attempts,
-                crate::fmt_time(r.last_at)
+                crate::fmt_time(r.last_at),
+            );
+            let _ = write!(
+                s,
+                "{}",
+                crate::trf!(
+                    "\nID {id}, {name}, попыток: {n}, последняя: {last}",
+                    "\nID {id}, {name}, attempts: {n}, last: {last}"
+                )
             );
         }
         Ok(s)
@@ -578,8 +1118,9 @@ pub async fn stranger_worker(app: Arc<App>, mut rx: mpsc::Receiver<StrangerHit>)
             sent_times.len() < usize::try_from(cfg.strangers.replies_per_hour).unwrap_or(0);
         let mut replied = false;
         if due && budget && !hit.stale {
-            let idx = rand::random_range(0..cfg.strangers.phrases.len().max(1));
-            if let Some(phrase) = cfg.strangers.phrases.get(idx) {
+            let phrases = crate::config::stranger_phrases(&cfg.strangers.phrases);
+            let idx = rand::random_range(0..phrases.len().max(1));
+            if let Some(phrase) = phrases.get(idx) {
                 match app.telegram.send_plain(hit.chat_id, phrase).await {
                     Ok(_) => {
                         replied = true;

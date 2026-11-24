@@ -13,9 +13,15 @@ use crate::storage::RepoRow;
 
 const DELIVERY_HISTORY: i64 = 3 * 86_400;
 
+fn api(app: &App) -> Result<&super::GithubApi, GhError> {
+    app.github
+        .as_ref()
+        .ok_or_else(|| GhError::Other("GitHub is not configured".into()))
+}
+
 pub async fn refresh_installations(app: &App) -> Result<(), GhError> {
-    let list = app.github.installations().await?;
-    let admin = app.secrets.github_admin_id;
+    let list = api(app)?.installations().await?;
+    let admin = app.secrets.github.as_ref().map_or(0, |g| g.admin_id);
     let mine: Vec<(i64, String, bool)> = list
         .into_iter()
         .filter(|i| i.account.as_ref().is_some_and(|a| a.id == admin))
@@ -48,7 +54,7 @@ async fn sync_repos(app: &App) -> Result<(), GhError> {
         let Ok(id) = u64::try_from(*inst) else {
             continue;
         };
-        for r in app.github.repositories(id).await? {
+        for r in api(app)?.repositories(id).await? {
             let Ok(rid) = i64::try_from(r.id) else {
                 continue;
             };
@@ -108,8 +114,12 @@ async fn sync_repos(app: &App) -> Result<(), GhError> {
         if let Some(r) = stored.get(id) {
             events.push(Event::service(
                 format!("gh:repo:rm:{id}:{now}"),
-                "Репозиторий снят с наблюдения",
-                format!("Репозиторий {} больше не доступен App (удалён, переименован или исключён из установки).", r.full_name),
+                crate::tr!("Репозиторий снят с наблюдения", "Repository no longer watched"),
+                crate::trf!(
+                    "Репозиторий {} больше не доступен App (удалён, переименован или исключён из установки).",
+                    "Repository {} is no longer available to the App (deleted, renamed or removed from the installation).",
+                    r.full_name
+                ),
             ));
         }
     }
@@ -117,9 +127,10 @@ async fn sync_repos(app: &App) -> Result<(), GhError> {
         let private = fresh.values().filter(|r| r.private).count();
         events.push(Event::service(
             "bot:repos_baseline",
-            "Репозитории GitHub взяты под наблюдение",
-            format!(
+            crate::tr!("Репозитории GitHub взяты под наблюдение", "GitHub repositories are now watched"),
+            crate::trf!(
                 "Репозиториев: {} (приватных: {private}). Новые репозитории подключаются автоматически.",
+                "Repositories: {} (private: {private}). New repositories are added automatically.",
                 fresh.len()
             ),
         ));
@@ -133,8 +144,7 @@ async fn sync_repos(app: &App) -> Result<(), GhError> {
 
 /// Asks GitHub to redeliver deliveries that never reached the bot. Returns how many.
 async fn redeliver_failed(app: &App) -> Result<usize, GhError> {
-    let deliveries = app
-        .github
+    let deliveries = api(app)?
         .deliveries(crate::now() - DELIVERY_HISTORY)
         .await?;
     let mut by_guid: BTreeMap<String, Vec<&super::Delivery>> = BTreeMap::new();
@@ -158,7 +168,7 @@ async fn redeliver_failed(app: &App) -> Result<usize, GhError> {
         let Some(latest) = attempts.iter().max_by_key(|d| d.id) else {
             continue;
         };
-        app.github.redeliver(latest.id).await?;
+        api(app)?.redeliver(latest.id).await?;
         app.db.note_redelivery(guid).await?;
         requested += 1;
     }
@@ -168,9 +178,13 @@ async fn redeliver_failed(app: &App) -> Result<usize, GhError> {
         app.health
             .fail(
                 "deliveries",
-                &format!("в журнале GitHub неудачных доставок: {}, запрошена повторная доставка: {requested}", failed_guids.len()),
+                &crate::trf!(
+                    "в журнале GitHub неудачных доставок: {}, запрошена повторная доставка: {requested}",
+                    "failed deliveries in the GitHub log: {}, redelivery requested: {requested}",
+                    failed_guids.len()
+                ),
                 1,
-                "проверьте, что адрес вебхука доступен снаружи (DNS, nginx, сертификат)",
+                crate::tr!("проверьте, что адрес вебхука доступен снаружи (DNS, прокси, сертификат)", "check that the webhook address is reachable from outside (DNS, proxy, certificate)"),
             )
             .await;
     }
@@ -182,7 +196,9 @@ pub async fn run_once(app: &App) {
     let result: Result<(), GhError> = async {
         refresh_installations(app).await?;
         sync_repos(app).await?;
-        redeliver_failed(app).await?;
+        if app.cfg().github.mode == crate::config::GithubMode::Webhook {
+            redeliver_failed(app).await?;
+        }
         Ok(())
     }
     .await;
@@ -192,9 +208,15 @@ pub async fn run_once(app: &App) {
             app.health
                 .fail(
                     "github",
-                    "GitHub отклонил ключ или ID App (401)",
+                    crate::tr!(
+                        "GitHub отклонил ключ или ID App (401)",
+                        "GitHub rejected the App key or ID (401)"
+                    ),
                     1,
-                    "проверьте HQW_GITHUB_APP_ID и HQW_GITHUB_APP_KEY",
+                    crate::tr!(
+                        "проверьте HQW_GITHUB_APP_ID и HQW_GITHUB_APP_KEY",
+                        "check HQW_GITHUB_APP_ID and HQW_GITHUB_APP_KEY"
+                    ),
                 )
                 .await;
         }
@@ -202,9 +224,12 @@ pub async fn run_once(app: &App) {
             app.health
                 .fail(
                     "github",
-                    &format!("нет доступа ({s}): установка App отозвана или не хватает прав"),
+                    &crate::trf!(
+                        "нет доступа ({s}): установка App отозвана или не хватает прав",
+                        "no access ({s}): the App installation was removed or lacks permissions"
+                    ),
                     1,
-                    "проверьте установку App и права Read для Metadata, Issues, Pull requests, Contents, Discussions",
+                    crate::tr!("проверьте установку App и права Read для Metadata, Issues, Pull requests, Contents, Discussions", "check the App installation and Read access to Metadata, Issues, Pull requests, Contents, Discussions"),
                 )
                 .await;
         }
@@ -217,7 +242,10 @@ pub async fn run_once(app: &App) {
                     "github",
                     &e.to_string(),
                     3,
-                    "проверьте доступность api.github.com; бот повторит сам",
+                    crate::tr!(
+                        "проверьте доступность api.github.com; бот повторит сам",
+                        "check that api.github.com is reachable; the bot retries by itself"
+                    ),
                 )
                 .await;
         }
@@ -227,7 +255,9 @@ pub async fn run_once(app: &App) {
 /// Runs at start, on schedule and on `/check_now github`.
 pub async fn run(app: Arc<App>) -> Result<()> {
     loop {
-        run_once(&app).await;
+        if crate::settings::current().github.enabled {
+            run_once(&app).await;
+        }
         let minutes = app.cfg().intervals.github_reconcile_minutes;
         app.health
             .beat("github_loop", i64::try_from(minutes)? * 60 + 600);

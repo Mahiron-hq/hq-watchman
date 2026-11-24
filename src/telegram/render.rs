@@ -45,7 +45,7 @@ impl View {
         let mut s = self.head.clone();
         if let Some(t) = &self.text {
             if t.trim().is_empty() {
-                s.push_str("\n<i>(без текста)</i>");
+                s.push_str(crate::tr!("\n<i>(без текста)</i>", "\n<i>(no text)</i>"));
             } else {
                 let _ = write!(
                     s,
@@ -69,8 +69,12 @@ impl View {
             let preview = text::truncate_chars(t, room);
             let _ = write!(
                 s,
-                "\n<blockquote>{}</blockquote>\n<i>Полный текст в приложенном файле.</i>",
-                external_html(&preview)
+                "\n<blockquote>{}</blockquote>\n<i>{}</i>",
+                external_html(&preview),
+                crate::tr!(
+                    "Полный текст в приложенном файле.",
+                    "Full text in the attached file."
+                )
             );
         }
         s.push('\n');
@@ -113,7 +117,7 @@ fn headline(source: Source, title: &str) -> String {
     let prefix = match source {
         Source::Github => "GitHub",
         Source::SteamGuide | Source::SteamUpdate => "Steam",
-        Source::Bot => "Бот",
+        Source::Bot => crate::tr!("Бот", "Bot"),
     };
     format!("<b>{prefix} · {}</b>", escape_html(title))
 }
@@ -134,34 +138,40 @@ pub fn view(source: Source, body: &Body) -> View {
             url,
         } => {
             let mut head = headline(source, &format!("{} · {}", kind.title(), change.word()));
-            code_field(&mut head, "Репозиторий", repo);
+            code_field(&mut head, crate::tr!("Репозиторий", "Repository"), repo);
             field(
                 &mut head,
                 if *kind == crate::event::GhCommentKind::Commit {
-                    "Коммит"
+                    crate::tr!("Коммит", "Commit")
                 } else {
-                    "Тема"
+                    crate::tr!("Тема", "Topic")
                 },
                 target,
             );
             if let Some(f) = file {
-                let place = line.map_or_else(|| f.clone(), |l| format!("{f}, строка {l}"));
-                code_field(&mut head, "Файл", &place);
+                let place = line.map_or_else(
+                    || f.clone(),
+                    |l| crate::trf!("{f}, строка {l}", "{f}, line {l}"),
+                );
+                code_field(&mut head, crate::tr!("Файл", "File"), &place);
             }
             if let Some(s) = review_state {
-                field(&mut head, "Вердикт", s);
+                field(&mut head, crate::tr!("Вердикт", "Verdict"), s);
             }
-            field(&mut head, "Автор", author);
+            field(&mut head, crate::tr!("Автор", "Author"), author);
             let label = if *change == Change::Deleted {
-                "Удалённый текст:"
+                crate::tr!("Удалённый текст:", "Deleted text:")
             } else {
-                "Текст:"
+                crate::tr!("Текст:", "Text:")
             };
             let _ = write!(head, "\n{label}");
             View {
                 head,
                 text: Some(text.clone()),
-                tail: format!("{}\n{tag}", link(url, "Открыть на GitHub")),
+                tail: format!(
+                    "{}\n{tag}",
+                    link(url, crate::tr!("Открыть на GitHub", "Open on GitHub"))
+                ),
             }
         }
         Body::GithubItem {
@@ -175,25 +185,32 @@ pub fn view(source: Source, body: &Body) -> View {
             url,
         } => {
             let what = if *reopened {
-                format!("{} открыт заново", kind.title())
+                crate::trf!("{} открыт заново", "{} reopened", kind.title())
             } else {
-                format!("Новый {}", kind.title())
+                crate::trf!("Новый {}", "New {}", kind.title())
             };
             let what = if *kind == crate::event::GhItemKind::Discussion {
-                "Новое обсуждение".to_owned()
+                crate::tr!("Новое обсуждение", "New discussion").to_owned()
             } else {
                 what
             };
             let mut head = headline(source, &what);
-            code_field(&mut head, "Репозиторий", repo);
-            field(&mut head, "Номер", &format!("#{number}"));
-            field(&mut head, "Заголовок", title);
-            field(&mut head, "Автор", author);
-            head.push_str("\nТекст:");
+            code_field(&mut head, crate::tr!("Репозиторий", "Repository"), repo);
+            field(
+                &mut head,
+                crate::tr!("Номер", "Number"),
+                &format!("#{number}"),
+            );
+            field(&mut head, crate::tr!("Заголовок", "Title"), title);
+            field(&mut head, crate::tr!("Автор", "Author"), author);
+            head.push_str(crate::tr!("\nТекст:", "\nText:"));
             View {
                 head,
                 text: Some(text.clone()),
-                tail: format!("{}\n{tag}", link(url, "Открыть на GitHub")),
+                tail: format!(
+                    "{}\n{tag}",
+                    link(url, crate::tr!("Открыть на GitHub", "Open on GitHub"))
+                ),
             }
         }
         Body::RepoWatched {
@@ -205,25 +222,34 @@ pub fn view(source: Source, body: &Body) -> View {
             let mut head = headline(
                 source,
                 if *removed {
-                    "Репозиторий снят с наблюдения"
+                    crate::tr!(
+                        "Репозиторий снят с наблюдения",
+                        "Repository no longer watched"
+                    )
                 } else {
-                    "Новый репозиторий под наблюдением"
+                    crate::tr!(
+                        "Новый репозиторий под наблюдением",
+                        "New repository watched"
+                    )
                 },
             );
-            code_field(&mut head, "Репозиторий", repo);
+            code_field(&mut head, crate::tr!("Репозиторий", "Repository"), repo);
             field(
                 &mut head,
-                "Доступ",
+                crate::tr!("Доступ", "Access"),
                 if *private {
-                    "приватный"
+                    crate::tr!("приватный", "private")
                 } else {
-                    "публичный"
+                    crate::tr!("публичный", "public")
                 },
             );
             View {
                 head,
                 text: None,
-                tail: format!("{}\n{tag}", link(url, "Открыть на GitHub")),
+                tail: format!(
+                    "{}\n{tag}",
+                    link(url, crate::tr!("Открыть на GitHub", "Open on GitHub"))
+                ),
             }
         }
         Body::GuideWatched {
@@ -235,19 +261,25 @@ pub fn view(source: Source, body: &Body) -> View {
             let mut head = headline(
                 source,
                 if *gone {
-                    "Руководство пропало (удалено или скрыто)"
+                    crate::tr!(
+                        "Руководство пропало (удалено или скрыто)",
+                        "Guide gone (deleted or hidden)"
+                    )
                 } else {
-                    "Новое руководство под наблюдением"
+                    crate::tr!("Новое руководство под наблюдением", "New guide watched")
                 },
             );
-            field(&mut head, "Руководство", title);
+            field(&mut head, crate::tr!("Руководство", "Guide"), title);
             if !game.is_empty() {
-                field(&mut head, "Игра", game);
+                field(&mut head, crate::tr!("Игра", "Game"), game);
             }
             View {
                 head,
                 text: None,
-                tail: format!("{}\n{tag}", link(url, "Открыть руководство")),
+                tail: format!(
+                    "{}\n{tag}",
+                    link(url, crate::tr!("Открыть руководство", "Open the guide"))
+                ),
             }
         }
         Body::GuideComment {
@@ -262,12 +294,12 @@ pub fn view(source: Source, body: &Body) -> View {
             let mut head = headline(
                 source,
                 if *deleted {
-                    "Комментарий удалён"
+                    crate::tr!("Комментарий удалён", "Comment deleted")
                 } else {
-                    "Новый комментарий к руководству"
+                    crate::tr!("Новый комментарий к руководству", "New guide comment")
                 },
             );
-            field(&mut head, "Руководство", guide);
+            field(&mut head, crate::tr!("Руководство", "Guide"), guide);
             let author_link = safe_link(author_url).map_or_else(
                 || external_html(author),
                 |u| {
@@ -278,21 +310,31 @@ pub fn view(source: Source, body: &Body) -> View {
                     )
                 },
             );
-            let _ = write!(head, "\nАвтор: {author_link}");
-            field(&mut head, "Время", &crate::fmt_time(*posted_at));
+            let _ = write!(head, "\n{}: {author_link}", crate::tr!("Автор", "Author"));
+            field(
+                &mut head,
+                crate::tr!("Время", "Time"),
+                &crate::fmt_time(*posted_at),
+            );
             let _ = write!(
                 head,
                 "\n{}",
                 if *deleted {
-                    "Удалённый текст:"
+                    crate::tr!("Удалённый текст:", "Deleted text:")
                 } else {
-                    "Текст:"
+                    crate::tr!("Текст:", "Text:")
                 }
             );
             View {
                 head,
                 text: Some(text.clone()),
-                tail: format!("{}\n{tag}", link(guide_url, "Открыть руководство")),
+                tail: format!(
+                    "{}\n{tag}",
+                    link(
+                        guide_url,
+                        crate::tr!("Открыть руководство", "Open the guide")
+                    )
+                ),
             }
         }
         Body::GameNews {
@@ -308,22 +350,26 @@ pub fn view(source: Source, body: &Body) -> View {
             let mut head = headline(
                 source,
                 if *patch {
-                    "Патчноут"
+                    crate::tr!("Патчноут", "Patch notes")
                 } else {
-                    "Новость игры"
+                    crate::tr!("Новость игры", "Game news")
                 },
             );
-            field(&mut head, "Игра", game);
-            field(&mut head, "Заголовок", title);
-            field(&mut head, "Дата", &crate::fmt_time(*date));
-            head.push_str("\nТекст:");
+            field(&mut head, crate::tr!("Игра", "Game"), game);
+            field(&mut head, crate::tr!("Заголовок", "Title"), title);
+            field(
+                &mut head,
+                crate::tr!("Дата", "Date"),
+                &crate::fmt_time(*date),
+            );
+            head.push_str(crate::tr!("\nТекст:", "\nText:"));
             View {
                 head,
                 text: Some(text.clone()),
                 tail: format!(
                     "{} · {}\n{tag}",
-                    link(url, "Новость"),
-                    link(store_url, "Страница игры")
+                    link(url, crate::tr!("Новость", "News")),
+                    link(store_url, crate::tr!("Страница игры", "Game page"))
                 ),
             }
         }
@@ -339,27 +385,42 @@ pub fn view(source: Source, body: &Body) -> View {
             ..
         } => {
             let what = match change {
-                BuildChange::Updated => "Обновление игры",
-                BuildChange::BranchAdded => "Новая ветка",
-                BuildChange::BranchRemoved => "Ветка удалена",
+                BuildChange::Updated => crate::tr!("Обновление игры", "Game update"),
+                BuildChange::BranchAdded => crate::tr!("Новая ветка", "New branch"),
+                BuildChange::BranchRemoved => crate::tr!("Ветка удалена", "Branch removed"),
             };
             let mut head = headline(source, what);
-            field(&mut head, if *is_dlc { "DLC" } else { "Игра" }, game);
-            code_field(&mut head, "Ветка", branch);
+            field(
+                &mut head,
+                if *is_dlc {
+                    "DLC"
+                } else {
+                    crate::tr!("Игра", "Game")
+                },
+                game,
+            );
+            code_field(&mut head, crate::tr!("Ветка", "Branch"), branch);
             let build = match (old_build, new_build) {
                 (Some(o), Some(n)) => format!("{o} → {n}"),
                 (None, Some(n)) => n.clone(),
-                (Some(o), None) => format!("{o} (ветки больше нет)"),
-                (None, None) => "неизвестен".into(),
+                (Some(o), None) => crate::trf!("{o} (ветки больше нет)", "{o} (branch is gone)"),
+                (None, None) => crate::tr!("неизвестен", "unknown").into(),
             };
-            field(&mut head, "Билд", &build);
+            field(&mut head, crate::tr!("Билд", "Build"), &build);
             if let Some(t) = updated_at {
-                field(&mut head, "Время обновления", &crate::fmt_time(*t));
+                field(
+                    &mut head,
+                    crate::tr!("Время обновления", "Update time"),
+                    &crate::fmt_time(*t),
+                );
             }
             View {
                 head,
                 text: None,
-                tail: format!("{}\n{tag}", link(store_url, "Страница игры")),
+                tail: format!(
+                    "{}\n{tag}",
+                    link(store_url, crate::tr!("Страница игры", "Game page"))
+                ),
             }
         }
         Body::Dlc {
@@ -368,19 +429,27 @@ pub fn view(source: Source, body: &Body) -> View {
             dlc_appid,
             change,
             store_url,
+            ..
         } => {
             let what = match change {
-                DlcChange::Added => "Новое DLC",
-                DlcChange::Removed => "DLC пропало из списка",
-                DlcChange::ContentChanged => "Обновлён контент DLC",
+                DlcChange::Added => crate::tr!("Новое DLC", "New DLC"),
+                DlcChange::Removed => {
+                    crate::tr!("DLC пропало из списка", "DLC removed from the list")
+                }
+                DlcChange::ContentChanged => {
+                    crate::tr!("Обновлён контент DLC", "DLC content updated")
+                }
             };
             let mut head = headline(source, what);
-            field(&mut head, "Игра", game);
+            field(&mut head, crate::tr!("Игра", "Game"), game);
             field(&mut head, "DLC", &format!("{dlc} ({dlc_appid})"));
             View {
                 head,
                 text: None,
-                tail: format!("{}\n{tag}", link(store_url, "Страница DLC")),
+                tail: format!(
+                    "{}\n{tag}",
+                    link(store_url, crate::tr!("Страница DLC", "DLC page"))
+                ),
             }
         }
         Body::Service { title, text } => {
@@ -414,21 +483,27 @@ fn md_fields(body: &Body) -> (Fields, Option<&str>, Fields) {
             text: t,
             url,
         } => {
-            f.push(("Тип", format!("{} ({})", kind.title(), change.word())));
-            f.push(("Репозиторий", repo.clone()));
-            f.push(("Тема", target.clone()));
+            f.push((
+                crate::tr!("Тип", "Type"),
+                format!("{} ({})", kind.title(), change.word()),
+            ));
+            f.push((crate::tr!("Репозиторий", "Repository"), repo.clone()));
+            f.push((crate::tr!("Тема", "Topic"), target.clone()));
             if let Some(p) = file {
                 f.push((
-                    "Файл",
-                    line.map_or_else(|| p.clone(), |l| format!("{p}, строка {l}")),
+                    crate::tr!("Файл", "File"),
+                    line.map_or_else(
+                        || p.clone(),
+                        |l| crate::trf!("{p}, строка {l}", "{p}, line {l}"),
+                    ),
                 ));
             }
             if let Some(s) = review_state {
-                f.push(("Вердикт", s.clone()));
+                f.push((crate::tr!("Вердикт", "Verdict"), s.clone()));
             }
-            f.push(("Автор", author.clone()));
+            f.push((crate::tr!("Автор", "Author"), author.clone()));
             text = Some(t.as_str());
-            links.push(("Ссылка", url.clone()));
+            links.push((crate::tr!("Ссылка", "Link"), url.clone()));
         }
         Body::GithubItem {
             kind,
@@ -441,23 +516,23 @@ fn md_fields(body: &Body) -> (Fields, Option<&str>, Fields) {
             url,
         } => {
             f.push((
-                "Тип",
+                crate::tr!("Тип", "Type"),
                 format!(
                     "{}{}",
                     kind.title(),
                     if *reopened {
-                        " (открыт заново)"
+                        crate::tr!(" (открыт заново)", " (reopened)")
                     } else {
                         ""
                     }
                 ),
             ));
-            f.push(("Репозиторий", repo.clone()));
-            f.push(("Номер", format!("#{number}")));
-            f.push(("Заголовок", title.clone()));
-            f.push(("Автор", author.clone()));
+            f.push((crate::tr!("Репозиторий", "Repository"), repo.clone()));
+            f.push((crate::tr!("Номер", "Number"), format!("#{number}")));
+            f.push((crate::tr!("Заголовок", "Title"), title.clone()));
+            f.push((crate::tr!("Автор", "Author"), author.clone()));
             text = Some(t.as_str());
-            links.push(("Ссылка", url.clone()));
+            links.push((crate::tr!("Ссылка", "Link"), url.clone()));
         }
         Body::RepoWatched {
             repo,
@@ -465,20 +540,23 @@ fn md_fields(body: &Body) -> (Fields, Option<&str>, Fields) {
             removed,
             url,
         } => {
-            f.push(("Репозиторий", repo.clone()));
+            f.push((crate::tr!("Репозиторий", "Repository"), repo.clone()));
             f.push((
-                "Доступ",
+                crate::tr!("Доступ", "Access"),
                 if *private {
-                    "приватный"
+                    crate::tr!("приватный", "private")
                 } else {
-                    "публичный"
+                    crate::tr!("публичный", "public")
                 }
                 .into(),
             ));
             if *removed {
-                f.push(("Состояние", "снят с наблюдения".into()));
+                f.push((
+                    crate::tr!("Состояние", "State"),
+                    crate::tr!("снят с наблюдения", "no longer watched").into(),
+                ));
             }
-            links.push(("Ссылка", url.clone()));
+            links.push((crate::tr!("Ссылка", "Link"), url.clone()));
         }
         Body::GuideWatched {
             title,
@@ -486,18 +564,18 @@ fn md_fields(body: &Body) -> (Fields, Option<&str>, Fields) {
             gone,
             url,
         } => {
-            f.push(("Руководство", title.clone()));
-            f.push(("Игра", game.clone()));
+            f.push((crate::tr!("Руководство", "Guide"), title.clone()));
+            f.push((crate::tr!("Игра", "Game"), game.clone()));
             f.push((
-                "Состояние",
+                crate::tr!("Состояние", "State"),
                 if *gone {
-                    "пропало"
+                    crate::tr!("пропало", "gone")
                 } else {
-                    "новое"
+                    crate::tr!("новое", "new")
                 }
                 .into(),
             ));
-            links.push(("Ссылка", url.clone()));
+            links.push((crate::tr!("Ссылка", "Link"), url.clone()));
         }
         Body::GuideComment {
             deleted,
@@ -509,20 +587,23 @@ fn md_fields(body: &Body) -> (Fields, Option<&str>, Fields) {
             text: t,
         } => {
             f.push((
-                "Действие",
+                crate::tr!("Действие", "Action"),
                 if *deleted {
-                    "удалён"
+                    crate::tr!("удалён", "deleted")
                 } else {
-                    "новый"
+                    crate::tr!("новый", "new")
                 }
                 .into(),
             ));
-            f.push(("Руководство", guide.clone()));
-            f.push(("Автор", author.clone()));
-            f.push(("Время", crate::fmt_time(*posted_at)));
+            f.push((crate::tr!("Руководство", "Guide"), guide.clone()));
+            f.push((crate::tr!("Автор", "Author"), author.clone()));
+            f.push((crate::tr!("Время", "Time"), crate::fmt_time(*posted_at)));
             text = Some(t.as_str());
-            links.push(("Профиль автора", author_url.clone()));
-            links.push(("Руководство", guide_url.clone()));
+            links.push((
+                crate::tr!("Профиль автора", "Author profile"),
+                author_url.clone(),
+            ));
+            links.push((crate::tr!("Руководство", "Guide"), guide_url.clone()));
         }
         Body::GameNews {
             game,
@@ -535,20 +616,20 @@ fn md_fields(body: &Body) -> (Fields, Option<&str>, Fields) {
             ..
         } => {
             f.push((
-                "Тип",
+                crate::tr!("Тип", "Type"),
                 if *patch {
-                    "патчноут"
+                    crate::tr!("патчноут", "patch notes")
                 } else {
-                    "новость"
+                    crate::tr!("новость", "news")
                 }
                 .into(),
             ));
-            f.push(("Игра", game.clone()));
-            f.push(("Заголовок", title.clone()));
-            f.push(("Дата", crate::fmt_time(*date)));
+            f.push((crate::tr!("Игра", "Game"), game.clone()));
+            f.push((crate::tr!("Заголовок", "Title"), title.clone()));
+            f.push((crate::tr!("Дата", "Date"), crate::fmt_time(*date)));
             text = Some(t.as_str());
-            links.push(("Новость", url.clone()));
-            links.push(("Страница игры", store_url.clone()));
+            links.push((crate::tr!("Новость", "News"), url.clone()));
+            links.push((crate::tr!("Страница игры", "Game page"), store_url.clone()));
         }
         Body::GameBuild {
             game,
@@ -559,20 +640,23 @@ fn md_fields(body: &Body) -> (Fields, Option<&str>, Fields) {
             store_url,
             ..
         } => {
-            f.push(("Игра", game.clone()));
-            f.push(("Ветка", branch.clone()));
+            f.push((crate::tr!("Игра", "Game"), game.clone()));
+            f.push((crate::tr!("Ветка", "Branch"), branch.clone()));
             f.push((
-                "Старый билд",
+                crate::tr!("Старый билд", "Old build"),
                 old_build.clone().unwrap_or_else(|| "-".into()),
             ));
             f.push((
-                "Новый билд",
+                crate::tr!("Новый билд", "New build"),
                 new_build.clone().unwrap_or_else(|| "-".into()),
             ));
             if let Some(t) = updated_at {
-                f.push(("Время обновления", crate::fmt_time(*t)));
+                f.push((
+                    crate::tr!("Время обновления", "Update time"),
+                    crate::fmt_time(*t),
+                ));
             }
-            links.push(("Страница игры", store_url.clone()));
+            links.push((crate::tr!("Страница игры", "Game page"), store_url.clone()));
         }
         Body::Dlc {
             game,
@@ -580,22 +664,23 @@ fn md_fields(body: &Body) -> (Fields, Option<&str>, Fields) {
             dlc_appid,
             change,
             store_url,
+            ..
         } => {
-            f.push(("Игра", game.clone()));
+            f.push((crate::tr!("Игра", "Game"), game.clone()));
             f.push(("DLC", format!("{dlc} ({dlc_appid})")));
             f.push((
-                "Изменение",
+                crate::tr!("Изменение", "Change"),
                 match change {
-                    DlcChange::Added => "новое",
-                    DlcChange::Removed => "пропало",
-                    DlcChange::ContentChanged => "обновлён контент",
+                    DlcChange::Added => crate::tr!("новое", "new"),
+                    DlcChange::Removed => crate::tr!("пропало", "gone"),
+                    DlcChange::ContentChanged => crate::tr!("обновлён контент", "content updated"),
                 }
                 .into(),
             ));
-            links.push(("Страница DLC", store_url.clone()));
+            links.push((crate::tr!("Страница DLC", "DLC page"), store_url.clone()));
         }
         Body::Service { title, text: t } => {
-            f.push(("Событие", title.clone()));
+            f.push((crate::tr!("Событие", "Event"), title.clone()));
             text = Some(t.as_str());
         }
     }
@@ -662,19 +747,26 @@ pub fn digest_markdown(items: &[Item<'_>], from: i64, to: i64) -> String {
             .or_default()
             .push(it);
     }
-    let mut s = format!(
-        "# Дайджест уведомлений\n\nПериод: {} - {}  \nСобытий: {}\n\n## Оглавление\n\n",
+    let (from, to, n) = (
         md_inline(&crate::fmt_time(from)),
         md_inline(&crate::fmt_time(to)),
-        items.len()
+        items.len(),
+    );
+    let mut s = crate::trf!(
+        "# Дайджест уведомлений\n\nПериод: {from} - {to}  \nСобытий: {n}\n\n## Оглавление\n\n",
+        "# Notification digest\n\nPeriod: {from} - {to}  \nEvents: {n}\n\n## Contents\n\n"
     );
     for (idx, groups) in &by_source {
-        let title = ORDER.get(*idx).map_or("Прочее", |s| s.title());
+        let title = ORDER
+            .get(*idx)
+            .map_or(crate::tr!("Прочее", "Other"), |s| s.title());
         let n: usize = groups.values().map(Vec::len).sum();
         let _ = writeln!(s, "- [{title}](#{}) ({n})", anchor(title));
     }
     for (idx, groups) in &by_source {
-        let title = ORDER.get(*idx).map_or("Прочее", |s| s.title());
+        let title = ORDER
+            .get(*idx)
+            .map_or(crate::tr!("Прочее", "Other"), |s| s.title());
         let _ = write!(s, "\n## {title}\n\n");
         for (group, list) in groups {
             let _ = write!(s, "### {}\n\n", md_inline(group));
@@ -730,7 +822,11 @@ pub fn digest_summary(items: &[Item<'_>]) -> String {
             .entry(type_title(it.body))
             .or_default() += 1;
     }
-    let mut s = format!("<b>Дайджест · событий: {}</b>", items.len());
+    let total_n = items.len();
+    let mut s = crate::trf!(
+        "<b>Дайджест · событий: {total_n}</b>",
+        "<b>Digest · events: {total_n}</b>"
+    );
     let mut tags = Vec::new();
     for (idx, types) in &counts {
         let src = ORDER.get(*idx).copied().unwrap_or(Source::Bot);
@@ -747,12 +843,15 @@ pub fn digest_summary(items: &[Item<'_>]) -> String {
         );
         tags.push(src.hashtag());
     }
-    s.push_str("\nВсе события в приложенном файле.\n");
+    s.push_str(crate::tr!(
+        "\nВсе события в приложенном файле.\n",
+        "\nAll events are in the attached file.\n"
+    ));
     s.push_str(&tags.join(" "));
     if visible_len(&s) > MAX_CAPTION {
-        let mut short = format!(
-            "<b>Дайджест · событий: {}</b>\nВсе события в приложенном файле.\n",
-            items.len()
+        let mut short = crate::trf!(
+            "<b>Дайджест · событий: {total_n}</b>\nВсе события в приложенном файле.\n",
+            "<b>Digest · events: {total_n}</b>\nAll events are in the attached file.\n"
         );
         short.push_str(&tags.join(" "));
         return short;

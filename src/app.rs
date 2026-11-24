@@ -13,11 +13,12 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Notify};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{Config, Secrets};
+use crate::config::{Config, GithubMode, GithubOptions, Secrets};
 use crate::event::Event;
 use crate::github::GithubApi;
 use crate::health::Health;
 use crate::net::HttpClient;
+use crate::settings::Settings;
 use crate::steam::games::GamesPoller;
 use crate::steam::guides::GuidesPoller;
 use crate::steam::SteamHttp;
@@ -39,7 +40,7 @@ pub struct App {
     pub db: Db,
     pub health: Health,
     pub http: HttpClient,
-    pub github: GithubApi,
+    pub github: Option<GithubApi>,
     pub steam: Arc<SteamHttp>,
     pub telegram: TelegramApi,
     installations: RwLock<Vec<i64>>,
@@ -48,6 +49,8 @@ pub struct App {
     pub outbox_signal: Notify,
     pub cancel: CancellationToken,
     pub stranger_tx: RwLock<Option<mpsc::Sender<crate::telegram::commands::StrangerHit>>>,
+    settings_lock: tokio::sync::Mutex<()>,
+    settings_text: std::sync::Mutex<String>,
 }
 
 impl App {
@@ -74,37 +77,149 @@ impl App {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = ids;
     }
 
+    /// Payload options: bot allow-list from the config, edits and deletes from settings.
+    pub fn github_options(&self) -> GithubOptions {
+        let s = crate::settings::current();
+        GithubOptions {
+            notify_edits: s.github.edits,
+            notify_deletes: s.github.deletes,
+            ..self.cfg().github.clone()
+        }
+    }
+
+    /// Changes settings atomically: validate, store, apply side effects, activate.
+    pub async fn update_settings(&self, change: impl FnOnce(&mut Settings)) -> Result<Settings> {
+        let _guard = self.settings_lock.lock().await;
+        let old = crate::settings::current();
+        let mut new = (*old).clone();
+        change(&mut new);
+        if new == *old {
+            return Ok(new);
+        }
+        let text = crate::settings::save(&self.db, &new).await?;
+        self.activate(&old, new.clone(), text).await?;
+        Ok(new)
+    }
+
+    async fn activate(&self, old: &Settings, new: Settings, text: String) -> Result<()> {
+        if old.games.enabled && !new.games.enabled {
+            self.db.forget_games_except(&[]).await?;
+        }
+        if old.guides.enabled && !new.guides.enabled {
+            self.db.forget_guides().await?;
+        }
+        let games_changed =
+            old.appids() != new.appids() || (!old.games.enabled && new.games.enabled);
+        let guides_on = !old.guides.enabled && new.guides.enabled;
+        let github_on = !old.github.enabled && new.github.enabled;
+        let lang_changed = old.language != new.language;
+        crate::settings::install(new);
+        *self
+            .settings_text
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = text;
+        if games_changed {
+            self.check_now.games.notify_one();
+        }
+        if guides_on {
+            self.check_now.guides.notify_one();
+        }
+        if github_on {
+            self.check_now.github.notify_one();
+        }
+        if lang_changed {
+            self.register_commands().await;
+        }
+        Ok(())
+    }
+
+    /// Picks up settings written by `hq-watchman settings set` while the bot runs.
+    async fn reload_settings_if_changed(&self) -> Result<()> {
+        let Some(text) = self.db.meta_get("settings").await? else {
+            return Ok(());
+        };
+        let same = *self
+            .settings_text
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            == text;
+        if same {
+            return Ok(());
+        }
+        let _guard = self.settings_lock.lock().await;
+        match Settings::from_json(&text) {
+            Ok(new) => {
+                let old = crate::settings::current();
+                tracing::info!("settings changed outside the bot, applied");
+                self.activate(&old, new, text).await?;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "stored settings are invalid, keeping the active ones");
+                *self
+                    .settings_text
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = text;
+            }
+        }
+        Ok(())
+    }
+
+    /// A group became a supergroup: follow it in settings and in the queue.
+    pub async fn move_chat(&self, from: i64, to: i64) -> Result<()> {
+        self.update_settings(|s| {
+            if let Some(c) = s.chats.iter_mut().find(|c| c.id == from) {
+                c.id = to;
+            }
+        })
+        .await?;
+        self.db.move_chat(from, to).await
+    }
+
+    pub async fn register_commands(&self) {
+        if let Err(e) = self
+            .telegram
+            .register_commands(
+                self.secrets.telegram_admin_id,
+                &crate::telegram::commands::commands(),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "command menu not registered");
+        }
+    }
+
     /// `/reload`: applies a valid config, reports what needs a restart.
     pub fn reload(&self) -> String {
         let new = match Config::load(&self.config_path) {
             Ok(c) => c,
             Err(e) => {
-                return format!(
+                return crate::trf!(
                     "Конфиг не применён, ошибка:\n<code>{}</code>",
+                    "Config not applied, error:\n<code>{}</code>",
                     escape_html(&format!("{e:#}"))
                 )
             }
         };
         let old = self.cfg();
         let restart = old.restart_only_diff(&new);
-        let games_changed = old.games.appids != new.games.appids;
-        crate::set_timezone(new.timezone.clone());
         *self
             .cfg
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(new);
-        if games_changed {
-            self.check_now.games.notify_one();
-        }
-        let mut s = String::from("Конфиг перечитан и применён.");
-        if games_changed {
-            s.push_str(" Список игр изменился, проверка игр запущена.");
-        }
+        let mut s = crate::tr!(
+            "Конфиг перечитан и применён.",
+            "Config re-read and applied."
+        )
+        .to_owned();
         if !restart.is_empty() {
+            let list = escape_html(&restart.join(", "));
             let _ = write!(
                 s,
-                "\nЭти параметры действуют только после перезапуска: {}.",
-                escape_html(&restart.join(", "))
+                "{}",
+                crate::trf!(
+                    "\nЭти параметры действуют только после перезапуска: {list}.",
+                    "\nThese settings take effect only after a restart: {list}."
+                )
             );
         }
         s
@@ -139,8 +254,11 @@ where
                 tracing::error!(task = name, "task panicked, restarting");
                 let ev = Event::service(
                     format!("bot:panic:{name}:{}", crate::now()),
-                    "Паника в подсистеме",
-                    format!("Подсистема «{name}» аварийно завершилась и перезапущена. Остальные подсистемы работают. Если повторяется, нужен разбор логов."),
+                    crate::tr!("Паника в подсистеме", "Subsystem panic"),
+                    crate::trf!(
+                        "Подсистема «{name}» аварийно завершилась и перезапущена. Остальные подсистемы работают. Если повторяется, нужен разбор логов.",
+                        "Subsystem \"{name}\" crashed and was restarted. Other subsystems keep working. If this repeats, the logs need a look."
+                    ),
                 );
                 app.notify(&ev).await;
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -155,17 +273,27 @@ fn jitter(base: Duration) -> Duration {
 }
 
 async fn guides_loop(app: Arc<App>) -> Result<()> {
+    let Some(profile) = app.secrets.steam_profile_id else {
+        return Ok(());
+    };
     let poller = GuidesPoller {
-        profile: app.secrets.steam_profile_id,
+        profile,
         steam: Arc::clone(&app.steam),
     };
     loop {
-        if let Err(e) = poller.poll(&app.db, &app.health).await {
-            app.health
-                .fail("guides", &format!("{e:#}"), 3, "смотрите логи бота")
-                .await;
+        if crate::settings::current().guides.enabled {
+            if let Err(e) = poller.poll(&app.db, &app.health).await {
+                app.health
+                    .fail(
+                        "guides",
+                        &format!("{e:#}"),
+                        3,
+                        crate::tr!("смотрите логи бота", "see the bot logs"),
+                    )
+                    .await;
+            }
+            app.outbox_signal.notify_one();
         }
-        app.outbox_signal.notify_one();
         let minutes = app.cfg().intervals.guides_minutes;
         app.health
             .beat("guides_loop", i64::try_from(minutes)? * 60 + 1800);
@@ -177,24 +305,65 @@ async fn guides_loop(app: Arc<App>) -> Result<()> {
     }
 }
 
+/// Copies game names learned from Steam into the settings list.
+async fn sync_game_names(app: &App) -> Result<()> {
+    let known: Vec<(i64, String, String)> = app.db.games().await?;
+    let s = crate::settings::current();
+    let stale = known.iter().any(|(id, name, _)| {
+        s.games
+            .list
+            .iter()
+            .any(|g| i64::from(g.appid) == *id && g.name != *name && !name.is_empty())
+    });
+    if stale {
+        app.update_settings(|s| {
+            for g in &mut s.games.list {
+                if let Some((_, name, _)) =
+                    known.iter().find(|(id, _, _)| *id == i64::from(g.appid))
+                {
+                    g.name = crate::text::clean_line(name, 100);
+                }
+            }
+        })
+        .await?;
+    }
+    Ok(())
+}
+
 async fn games_loop(app: Arc<App>) -> Result<()> {
     let mut poller = GamesPoller::new();
     loop {
         let cfg = app.cfg();
-        match poller.poll(&cfg, &app.db, &app.health, &app.steam).await {
-            Ok(()) => app.health.ok("games").await,
-            Err(e) => {
-                app.health
-                    .fail(
-                        "games",
-                        &format!("{e:#}"),
-                        3,
-                        "проверьте доступность Steam; бот повторит сам",
-                    )
-                    .await;
+        let s = crate::settings::current();
+        if s.games.enabled && !s.games.list.is_empty() {
+            match poller
+                .poll(&cfg, &s.appids(), &app.db, &app.health, &app.steam)
+                .await
+            {
+                Ok(()) => {
+                    app.health.ok("games").await;
+                    if let Err(e) = sync_game_names(&app).await {
+                        tracing::warn!(error = %e, "game names not saved");
+                    }
+                }
+                Err(e) => {
+                    app.health
+                        .fail(
+                            "games",
+                            &format!("{e:#}"),
+                            3,
+                            crate::tr!(
+                                "проверьте доступность Steam; бот повторит сам",
+                                "check that Steam is reachable; the bot retries by itself"
+                            ),
+                        )
+                        .await;
+                }
             }
+            app.outbox_signal.notify_one();
+        } else if !s.games.enabled {
+            app.db.forget_games_except(&[]).await?;
         }
-        app.outbox_signal.notify_one();
         let minutes = cfg.intervals.games_minutes;
         app.health
             .beat("games_loop", i64::try_from(minutes)? * 60 + 1800);
@@ -202,6 +371,19 @@ async fn games_loop(app: Arc<App>) -> Result<()> {
             () = app.cancel.cancelled() => return Ok(()),
             () = app.check_now.games.notified() => {}
             () = tokio::time::sleep(jitter(Duration::from_secs(minutes * 60))) => {}
+        }
+    }
+}
+
+async fn settings_watch(app: Arc<App>) -> Result<()> {
+    loop {
+        if let Err(e) = app.reload_settings_if_changed().await {
+            tracing::warn!(error = %e, "settings check failed");
+        }
+        app.health.beat("settings", 120);
+        tokio::select! {
+            () = app.cancel.cancelled() => return Ok(()),
+            () = tokio::time::sleep(Duration::from_secs(5)) => {}
         }
     }
 }
@@ -217,20 +399,30 @@ async fn maintenance_loop(app: Arc<App>) -> Result<()> {
                 app.health
                     .fail(
                         "storage",
-                        &format!("запись в базу не удалась: {e:#}"),
+                        &crate::trf!(
+                            "запись в базу не удалась: {e:#}",
+                            "database write failed: {e:#}"
+                        ),
                         1,
-                        "проверьте свободное место и права на том с базой",
+                        crate::tr!(
+                            "проверьте свободное место и права на том с базой",
+                            "check free space and permissions of the database volume"
+                        ),
                     )
                     .await;
             }
         }
         let now = crate::now();
-        if now - ranges_at >= 86_400
-            || (app.cfg().webhook.ip_filter
-                && app.hook_ranges.read().map_or(true, |r| r.is_none())
-                && now - ranges_at >= 3600)
+        let cfg = app.cfg();
+        let filter = app.github.is_some()
+            && cfg.github.mode == GithubMode::Webhook
+            && cfg.webhook.as_ref().is_some_and(|w| w.ip_filter);
+        if filter
+            && (now - ranges_at >= 86_400
+                || (app.hook_ranges.read().map_or(true, |r| r.is_none())
+                    && now - ranges_at >= 3600))
         {
-            match app.github.hook_ranges().await {
+            match crate::github::hook_ranges(&app.http).await {
                 Ok(r) => {
                     *app.hook_ranges
                         .write()
@@ -264,9 +456,15 @@ async fn maintenance_loop(app: Arc<App>) -> Result<()> {
                     app.health
                         .fail(
                             "storage",
-                            &format!("резервная копия не создана: {e:#}"),
+                            &crate::trf!(
+                                "резервная копия не создана: {e:#}",
+                                "backup not written: {e:#}"
+                            ),
                             1,
-                            "проверьте свободное место на томе с базой",
+                            crate::tr!(
+                                "проверьте свободное место на томе с базой",
+                                "check free space on the database volume"
+                            ),
                         )
                         .await;
                 }
@@ -322,42 +520,95 @@ pub async fn healthcheck(addr: &str) -> Result<()> {
     }
 }
 
+fn source_line(on: bool, configured: bool) -> &'static str {
+    match (on, configured) {
+        (_, false) => crate::tr!("не настроено", "not configured"),
+        (true, true) => crate::tr!("включено", "on"),
+        (false, true) => crate::tr!("выключено", "off"),
+    }
+}
+
 async fn startup_message(app: &App, previous_alive: Option<i64>) -> Result<()> {
     let now = crate::now();
+    let s = crate::settings::current();
     let repos = app.db.repos().await?.len();
     let guides = app.db.guides().await?.len();
-    let games = app.cfg().games.appids.len();
-    let mut text = format!(
-        "Версия {} ({}). Под наблюдением: репозиториев {repos}, руководств {guides}, игр {games}.",
-        env!("CARGO_PKG_VERSION"),
-        option_env!("HQW_COMMIT").unwrap_or("dev")
+    let games = s.games.list.len();
+    let version = env!("CARGO_PKG_VERSION");
+    let commit = option_env!("HQW_COMMIT").unwrap_or("dev");
+    let mut text = crate::trf!(
+        "Версия {version} ({commit}).",
+        "Version {version} ({commit})."
+    );
+    let gh = source_line(s.github.enabled, app.github.is_some());
+    let gd = source_line(s.guides.enabled, app.secrets.steam_profile_id.is_some());
+    let gm = source_line(s.games.enabled, true);
+    let _ = write!(
+        text,
+        "{}",
+        crate::trf!(
+            "\nGitHub: {gh}, репозиториев {repos}.\nРуководства Steam: {gd}, руководств {guides}.\nИгры Steam: {gm}, игр {games}.",
+            "\nGitHub: {gh}, repositories {repos}.\nSteam guides: {gd}, guides {guides}.\nSteam games: {gm}, games {games}."
+        )
     );
     match previous_alive {
         Some(t) => {
-            let _ = write!(text, "\nПростой: {} (с {}).", crate::fmt_duration(now - t), crate::fmt_time(t));
-            if now - t > 3 * 86_400 {
+            let (down, since) = (crate::fmt_duration(now - t), crate::fmt_time(t));
+            let _ = write!(text, "{}", crate::trf!("\nПростой: {down} (с {since}).", "\nDowntime: {down} (since {since})."));
+            if now - t > 3 * 86_400 && app.github.is_some() {
+                let (from, to) = (crate::fmt_time(t), crate::fmt_time(now - 3 * 86_400));
                 let _ = write!(
                     text,
-                    "\nБот был выключен дольше 3 суток. GitHub хранит журнал доставок только 3 дня, поэтому события GitHub с {} по {} могли быть потеряны.",
-                    crate::fmt_time(t),
-                    crate::fmt_time(now - 3 * 86_400)
+                    "{}",
+                    crate::trf!(
+                        "\nБот был выключен дольше 3 суток. GitHub хранит журнал доставок только 3 дня, поэтому события GitHub с {from} по {to} могли быть потеряны.",
+                        "\nThe bot was off for more than 3 days. GitHub keeps the delivery log for 3 days only, so GitHub events from {from} to {to} may be lost."
+                    )
                 );
             }
         }
-        None => text.push_str("\nПервый запуск: сначала записывается текущее состояние, старые события не присылаются."),
+        None => text.push_str(crate::tr!(
+            "\nПервый запуск: сначала записывается текущее состояние, старые события не присылаются. Настройки: /settings.",
+            "\nFirst start: the current state is recorded first, old events are not sent. Settings: /settings."
+        )),
     }
     app.notify(&Event::service(
         format!("bot:start:{now}"),
-        "Бот запущен",
+        crate::tr!("Бот запущен", "Bot started"),
         text,
     ))
     .await;
     Ok(())
 }
 
+/// Refuses to start with a GitHub setup that cannot receive events.
+fn check_github_setup(cfg: &Config, secrets: &Secrets) -> Result<()> {
+    let Some(gh) = &secrets.github else {
+        return Ok(());
+    };
+    if cfg.github.mode == GithubMode::Webhook {
+        if cfg.webhook.is_none() {
+            bail!("github.mode is \"webhook\" but the config has no [webhook] section; add it or set github.mode = \"polling\"");
+        }
+        if gh.webhook_secret.is_none() {
+            bail!("github.mode is \"webhook\" but HQW_GITHUB_WEBHOOK_SECRET is not set");
+        }
+    }
+    Ok(())
+}
+
 pub async fn run(config_path: PathBuf, cfg: Config, secrets: Secrets) -> Result<()> {
-    crate::set_timezone(cfg.timezone.clone());
+    check_github_setup(&cfg, &secrets)?;
     let db = Db::open(&cfg.storage.path, cfg.storage.backups).await?;
+    let settings = if let Some((s, _)) = crate::settings::load(&db).await? {
+        s
+    } else {
+        let s = Settings::seed(&cfg);
+        crate::settings::save(&db, &s).await?;
+        s
+    };
+    let settings_text = serde_json::to_string(&settings)?;
+    crate::settings::install(settings);
     let ua = format!("hq-watchman/{}", env!("CARGO_PKG_VERSION"));
     let http = HttpClient::new(&ua)?;
     let telegram = TelegramApi::new(http.clone(), secrets.telegram_token.clone());
@@ -366,7 +617,10 @@ pub async fn run(config_path: PathBuf, cfg: Config, secrets: Secrets) -> Result<
         Err(TgError::Unauthorized) => bail!("Telegram rejected HQW_TELEGRAM_TOKEN"),
         Err(e) => tracing::warn!(error = %e, "Telegram not reachable at start, will retry"),
     }
-    let github = GithubApi::new(http.clone(), secrets.github_app_id, &secrets.github_app_key)?;
+    let github = match &secrets.github {
+        Some(g) => Some(GithubApi::new(http.clone(), g.app_id, &g.app_key)?),
+        None => None,
+    };
     let steam = Arc::new(SteamHttp::new(http.clone(), secrets.steam_api_key.clone()));
     let previous_alive = db
         .meta_get("last_alive")
@@ -379,6 +633,7 @@ pub async fn run(config_path: PathBuf, cfg: Config, secrets: Secrets) -> Result<
         .filter(|(_, _, s)| !s)
         .map(|(id, _, _)| id)
         .collect();
+    let mode = cfg.github.mode;
     let app = Arc::new(App {
         config_path,
         cfg: RwLock::new(Arc::new(cfg)),
@@ -395,18 +650,11 @@ pub async fn run(config_path: PathBuf, cfg: Config, secrets: Secrets) -> Result<
         outbox_signal: Notify::new(),
         cancel: CancellationToken::new(),
         stranger_tx: RwLock::new(None),
+        settings_lock: tokio::sync::Mutex::new(()),
+        settings_text: std::sync::Mutex::new(settings_text),
     });
     app.db.write_probe().await?;
-    if let Err(e) = app
-        .telegram
-        .register_commands(
-            app.secrets.telegram_admin_id,
-            crate::telegram::commands::COMMANDS,
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "command menu not registered");
-    }
+    app.register_commands().await;
     startup_message(&app, previous_alive).await?;
 
     let mut tasks = tokio::task::JoinSet::new();
@@ -423,18 +671,32 @@ pub async fn run(config_path: PathBuf, cfg: Config, secrets: Secrets) -> Result<
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
         crate::telegram::commands::stranger_worker(a, rx)
     }));
-    tasks.spawn(supervise(
-        Arc::clone(&app),
-        "webhook",
-        crate::github::webhook::serve,
-    ));
-    tasks.spawn(supervise(
-        Arc::clone(&app),
-        "github",
-        crate::github::reconcile::run,
-    ));
+    if app.github.is_some() {
+        match mode {
+            GithubMode::Webhook => {
+                tasks.spawn(supervise(
+                    Arc::clone(&app),
+                    "webhook",
+                    crate::github::webhook::serve,
+                ));
+            }
+            GithubMode::Polling => {
+                tasks.spawn(supervise(
+                    Arc::clone(&app),
+                    "github_poll",
+                    crate::github::poll::run,
+                ));
+            }
+        }
+        tasks.spawn(supervise(
+            Arc::clone(&app),
+            "github",
+            crate::github::reconcile::run,
+        ));
+    }
     tasks.spawn(supervise(Arc::clone(&app), "guides", guides_loop));
     tasks.spawn(supervise(Arc::clone(&app), "games", games_loop));
+    tasks.spawn(supervise(Arc::clone(&app), "settings", settings_watch));
     tasks.spawn(supervise(Arc::clone(&app), "maintenance", maintenance_loop));
     tasks.spawn(supervise(Arc::clone(&app), "health", health_server));
 

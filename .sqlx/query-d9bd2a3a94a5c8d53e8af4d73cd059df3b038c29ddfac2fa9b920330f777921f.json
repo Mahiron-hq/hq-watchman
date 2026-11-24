@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, kind, source, body, occurred_at, created_at, attempts, reply_to\n               FROM outbox WHERE status = 0 AND next_attempt_at <= ? ORDER BY id LIMIT 500",
+  "query": "SELECT id, kind, source, body, occurred_at, created_at, attempts, reply_to, chat_id\n               FROM outbox WHERE status = 0 AND next_attempt_at <= ? ORDER BY id LIMIT 500",
   "describe": {
     "columns": [
       {
@@ -90,6 +90,17 @@
             "name": "reply_to"
           }
         }
+      },
+      {
+        "name": "chat_id",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "chat_id"
+          }
+        }
       }
     ],
     "parameters": {
@@ -103,8 +114,9 @@
       false,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "8cae0dedd032f64eb7d200f4230b555586eef49e2021cc899b1f01a58d93b2c2"
+  "hash": "d9bd2a3a94a5c8d53e8af4d73cd059df3b038c29ddfac2fa9b920330f777921f"
 }

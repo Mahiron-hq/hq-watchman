@@ -24,25 +24,34 @@ pub struct Health {
     states: Mutex<BTreeMap<&'static str, SourceState>>,
 }
 
-/// Names and Russian titles of tracked subsystems.
-pub const SUBSYSTEMS: &[(&str, &str)] = &[
-    ("telegram", "Telegram"),
-    ("webhook", "Приём вебхуков GitHub"),
-    ("github", "GitHub API"),
-    ("guides", "Руководства Steam"),
-    ("guides_parser", "Парсер страниц Steam"),
-    ("games", "Игры Steam"),
-    ("pics", "Steam PICS"),
-    ("news", "Новости Steam"),
-    ("deliveries", "Доставки вебхуков GitHub"),
-    ("storage", "База данных"),
+/// Names of tracked subsystems.
+pub const SUBSYSTEMS: &[&str] = &[
+    "telegram",
+    "webhook",
+    "github",
+    "guides",
+    "guides_parser",
+    "games",
+    "pics",
+    "news",
+    "deliveries",
+    "storage",
 ];
 
 pub fn title(name: &str) -> &'static str {
-    SUBSYSTEMS
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map_or("Подсистема", |(_, t)| t)
+    match name {
+        "telegram" => "Telegram",
+        "webhook" => crate::tr!("Приём вебхуков GitHub", "GitHub webhook endpoint"),
+        "github" => "GitHub API",
+        "guides" => crate::tr!("Руководства Steam", "Steam guides"),
+        "guides_parser" => crate::tr!("Парсер страниц Steam", "Steam page parser"),
+        "games" => crate::tr!("Игры Steam", "Steam games"),
+        "pics" => "Steam PICS",
+        "news" => crate::tr!("Новости Steam", "Steam news"),
+        "deliveries" => crate::tr!("Доставки вебхуков GitHub", "GitHub webhook deliveries"),
+        "storage" => crate::tr!("База данных", "Database"),
+        _ => crate::tr!("Подсистема", "Subsystem"),
+    }
 }
 
 impl Health {
@@ -104,9 +113,10 @@ impl Health {
         if let Some(since) = recovered {
             let ev = Event::service(
                 format!("bot:recover:{name}:{since}"),
-                format!("{}: работа восстановлена", title(name)),
-                format!(
+                crate::trf!("{}: работа восстановлена", "{}: recovered", title(name)),
+                crate::trf!(
                     "Источник снова работает. Сбой длился с {}.",
+                    "The source works again. The outage started at {}.",
                     crate::fmt_time(since)
                 ),
             );
@@ -143,9 +153,10 @@ impl Health {
         if let Some(since) = alert {
             let ev = Event::service(
                 format!("bot:alert:{name}:{since}"),
-                format!("{}: сбой", title(name)),
-                format!(
+                crate::trf!("{}: сбой", "{}: failure", title(name)),
+                crate::trf!(
                     "Проблема: {error}\nС какого момента: {}\nЧто сделать: {advice}",
+                    "Problem: {error}\nSince: {}\nWhat to do: {advice}",
                     crate::fmt_time(since)
                 ),
             );

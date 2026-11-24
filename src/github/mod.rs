@@ -2,6 +2,7 @@
 //! GitHub App client: JWT, installation tokens, repositories and deliveries.
 
 pub mod payload;
+pub mod poll;
 pub mod reconcile;
 pub mod webhook;
 
@@ -90,6 +91,21 @@ pub struct Delivery {
     pub status_code: u16,
     #[serde(default)]
     pub redelivery: bool,
+}
+
+/// One logged delivery with its payload, as the delivery log returns it.
+#[derive(Debug, Deserialize)]
+pub struct DeliveryDetail {
+    pub guid: String,
+    #[serde(default)]
+    pub event: String,
+    pub request: DeliveryRequest,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeliveryRequest {
+    #[serde(default)]
+    pub payload: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -293,6 +309,14 @@ impl GithubApi {
         Ok(out)
     }
 
+    /// Full delivery including the payload GitHub tried to send.
+    pub async fn delivery(&self, delivery_id: u64) -> Result<DeliveryDetail, GhError> {
+        let (_, d) = self
+            .app_get(&format!("/app/hook/deliveries/{delivery_id}"))
+            .await?;
+        Ok(d)
+    }
+
     pub async fn redeliver(&self, delivery_id: u64) -> Result<(), GhError> {
         let jwt = self.jwt()?;
         self.call(
@@ -304,20 +328,20 @@ impl GithubApi {
         .await?;
         Ok(())
     }
+}
 
-    /// Webhook IP ranges from the public meta endpoint.
-    pub async fn hook_ranges(&self) -> Result<Vec<ipnet::IpNet>> {
-        #[derive(Deserialize)]
-        struct Meta {
-            hooks: Vec<String>,
-        }
-        let meta: Meta = self.http.get_json(&format!("{API}/meta")).await?;
-        let nets: Vec<ipnet::IpNet> = meta.hooks.iter().filter_map(|h| h.parse().ok()).collect();
-        if nets.is_empty() {
-            bail!("GitHub meta has no hook ranges");
-        }
-        Ok(nets)
+/// Webhook IP ranges from the public meta endpoint.
+pub async fn hook_ranges(http: &HttpClient) -> Result<Vec<ipnet::IpNet>> {
+    #[derive(Deserialize)]
+    struct Meta {
+        hooks: Vec<String>,
     }
+    let meta: Meta = http.get_json(&format!("{API}/meta")).await?;
+    let nets: Vec<ipnet::IpNet> = meta.hooks.iter().filter_map(|h| h.parse().ok()).collect();
+    if nets.is_empty() {
+        bail!("GitHub meta has no hook ranges");
+    }
+    Ok(nets)
 }
 
 pub fn parse_ts(s: &str) -> Option<i64> {

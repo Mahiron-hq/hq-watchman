@@ -119,7 +119,7 @@ pub fn parse_app_info(text: &str) -> Result<AppInfo> {
 
 fn branch_label(name: &str, b: &Branch) -> String {
     if b.password {
-        format!("{name} (с паролем)")
+        crate::trf!("{name} (с паролем)", "{name} (password)")
     } else {
         name.to_owned()
     }
@@ -191,6 +191,7 @@ pub fn diff(appid: u32, old: &GameState, new: &GameState) -> Vec<Event> {
             crate::now(),
             Body::Dlc {
                 game: game.clone(),
+                appid,
                 dlc: d.name.clone(),
                 dlc_appid: dlc_id,
                 change,
@@ -334,18 +335,18 @@ impl GamesPoller {
     pub async fn poll(
         &mut self,
         cfg: &Config,
+        appids: &[u32],
         db: &Db,
         health: &Health,
         steam: &SteamHttp,
     ) -> Result<()> {
-        let appids = cfg.games.appids.clone();
-        db.forget_games_except(&appids).await?;
+        db.forget_games_except(appids).await?;
         if appids.is_empty() {
             return Ok(());
         }
         let merge = i64::try_from(cfg.games.merge_window_minutes)? * 60;
         let mut baselined = Vec::new();
-        match fetch_states(steam, &appids).await {
+        match fetch_states(steam, appids).await {
             Ok(states) => {
                 self.pics_failing_since = None;
                 health.ok("pics").await;
@@ -359,11 +360,14 @@ impl GamesPoller {
                         state.fallback_version = o.fallback_version;
                         diff(appid, o, &state)
                     } else {
-                        baselined.push(format!(
-                            "{} (веток: {}, DLC: {})",
-                            state.name,
+                        let (name, branches, dlcs) = (
+                            &state.name,
                             state.branches.len(),
-                            state.dlcs.values().filter(|d| !d.music).count()
+                            state.dlcs.values().filter(|d| !d.music).count(),
+                        );
+                        baselined.push(crate::trf!(
+                            "{name} (веток: {branches}, DLC: {dlcs})",
+                            "{name} (branches: {branches}, DLC: {dlcs})"
                         ));
                         Vec::new()
                     };
@@ -387,24 +391,24 @@ impl GamesPoller {
                         "pics",
                         &format!("{e:#}"),
                         threshold,
-                        "ничего, бот перешёл на запасной сигнал (проверка версии через Steam Web API) и вернётся к PICS сам",
+                        crate::tr!("ничего, бот перешёл на запасной сигнал (проверка версии через Steam Web API) и вернётся к PICS сам", "nothing, the bot switched to the fallback (version check via Steam Web API) and returns to PICS by itself"),
                     )
                     .await;
                 if now - since >= 3600 {
-                    self.fallback(cfg, db, steam, merge).await?;
+                    self.fallback(appids, db, steam, merge).await?;
                 }
             }
         }
-        let news_result = Self::poll_news(cfg, db, steam, merge).await;
+        let news_result = Self::poll_news(cfg, appids, db, steam, merge).await;
         match news_result {
             Ok(()) => health.ok("news").await,
             Err(SteamError::BadKey) => {
                 health
                     .fail(
                         "news",
-                        "ключ Steam Web API отклонён",
+                        crate::tr!("ключ Steam Web API отклонён", "Steam Web API key rejected"),
                         1,
-                        "проверьте HQW_STEAM_API_KEY",
+                        crate::tr!("проверьте HQW_STEAM_API_KEY", "check HQW_STEAM_API_KEY"),
                     )
                     .await;
             }
@@ -414,7 +418,10 @@ impl GamesPoller {
                         "news",
                         &format!("{e:#}"),
                         3,
-                        "проверьте доступность api.steampowered.com",
+                        crate::tr!(
+                            "проверьте доступность api.steampowered.com",
+                            "check that api.steampowered.com is reachable"
+                        ),
                     )
                     .await;
             }
@@ -422,9 +429,10 @@ impl GamesPoller {
         if !baselined.is_empty() {
             let ev = Event::service(
                 format!("bot:games_baseline:{}", crate::now()),
-                "Игры взяты под наблюдение",
-                format!(
+                crate::tr!("Игры взяты под наблюдение", "Games are now watched"),
+                crate::trf!(
                     "Старые новости и билды не присылаются, отслеживаются только новые изменения.\n{}",
+                    "Old news and builds are not sent, only new changes are tracked.\n{}",
                     baselined.join("\n")
                 ),
             );
@@ -435,12 +443,13 @@ impl GamesPoller {
 
     async fn poll_news(
         cfg: &Config,
+        appids: &[u32],
         db: &Db,
         steam: &SteamHttp,
         merge: i64,
     ) -> Result<(), SteamError> {
         let feeds = cfg.games.news_feeds.join(",");
-        for &appid in &cfg.games.appids {
+        for &appid in appids {
             let key = i64::from(appid);
             let Some(state) = db
                 .game_state(key)
@@ -515,8 +524,8 @@ impl GamesPoller {
         Ok(())
     }
 
-    async fn fallback(&self, cfg: &Config, db: &Db, steam: &SteamHttp, merge: i64) -> Result<()> {
-        for &appid in &cfg.games.appids {
+    async fn fallback(&self, appids: &[u32], db: &Db, steam: &SteamHttp, merge: i64) -> Result<()> {
+        for &appid in appids {
             let key = i64::from(appid);
             let Some(mut state) = db
                 .game_state(key)
@@ -553,9 +562,13 @@ impl GamesPoller {
                         appid,
                         is_dlc: false,
                         change: BuildChange::Updated,
-                        branch: "public (по версии Web API)".into(),
-                        old_build: Some(format!("версия {old}")),
-                        new_build: Some(format!("версия {version}")),
+                        branch: crate::tr!(
+                            "public (по версии Web API)",
+                            "public (by Web API version)"
+                        )
+                        .into(),
+                        old_build: Some(crate::trf!("версия {old}", "version {old}")),
+                        new_build: Some(crate::trf!("версия {version}", "version {version}")),
                         updated_at: None,
                         store_url: store_url(appid),
                     },

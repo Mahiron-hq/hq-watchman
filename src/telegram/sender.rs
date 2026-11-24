@@ -74,6 +74,7 @@ enum Outcome {
     Drop(String),
     Wait(u64),
     Blocked(String),
+    Migrated(i64),
 }
 
 pub struct Sender {
@@ -89,13 +90,13 @@ impl Sender {
         }
     }
 
-    fn admin(&self) -> i64 {
-        self.app.secrets.telegram_admin_id
+    fn chat(&self, chat: Option<i64>) -> i64 {
+        chat.unwrap_or(self.app.secrets.telegram_admin_id)
     }
 
-    fn quiet_now(&self) -> bool {
-        let cfg = self.app.cfg();
-        is_quiet(&cfg.quiet_hours, crate::now(), &cfg.timezone)
+    fn quiet_now() -> bool {
+        let s = crate::settings::current();
+        is_quiet(&s.quiet(), crate::now(), &s.tz())
     }
 
     async fn reply_target(&self, row: &OutboxRow) -> Result<Option<i64>> {
@@ -105,17 +106,24 @@ impl Sender {
         }
     }
 
-    async fn send_text(&self, html: &str, silent: bool, reply_to: Option<i64>) -> Outcome {
+    async fn send_text(
+        &self,
+        chat: Option<i64>,
+        html: &str,
+        silent: bool,
+        reply_to: Option<i64>,
+    ) -> Outcome {
         classify(
             self.app
                 .telegram
-                .send_message(self.admin(), html, silent, reply_to)
+                .send_message(self.chat(chat), html, silent, reply_to)
                 .await,
         )
     }
 
     async fn send_file(
         &self,
+        chat: Option<i64>,
         name: &str,
         data: Vec<u8>,
         caption: &str,
@@ -125,7 +133,7 @@ impl Sender {
         classify(
             self.app
                 .telegram
-                .send_document(self.admin(), name, data, caption, silent, reply_to)
+                .send_document(self.chat(chat), name, data, caption, silent, reply_to)
                 .await,
         )
     }
@@ -136,7 +144,7 @@ impl Sender {
         let v = render::view(d.source, &d.body);
         let html = v.html();
         if render::visible_len(&html) <= MAX_MESSAGE {
-            return Ok(self.send_text(&html, silent, reply_to).await);
+            return Ok(self.send_text(d.row.chat_id, &html, silent, reply_to).await);
         }
         let md = format!(
             "# {}\n\n{}",
@@ -152,10 +160,17 @@ impl Sender {
             let cap = if i == 0 {
                 caption.clone()
             } else {
-                format!("Часть {} из {n}", i + 1)
+                crate::trf!("Часть {} из {n}", "Part {} of {n}", i + 1)
             };
             match self
-                .send_file(&name, part.into_bytes(), &cap, silent, reply_to.or(first))
+                .send_file(
+                    d.row.chat_id,
+                    &name,
+                    part.into_bytes(),
+                    &cap,
+                    silent,
+                    reply_to.or(first),
+                )
                 .await
             {
                 Outcome::Sent(id) => {
@@ -168,7 +183,7 @@ impl Sender {
         Ok(Outcome::Sent(first))
     }
 
-    async fn send_digest(&self, list: &[Decoded], silent: bool) -> Outcome {
+    async fn send_digest(&self, chat: Option<i64>, list: &[Decoded], silent: bool) -> Outcome {
         let items: Vec<Item<'_>> = list
             .iter()
             .map(|d| Item {
@@ -198,10 +213,10 @@ impl Sender {
             let cap = if i == 0 {
                 caption.clone()
             } else {
-                format!("Дайджест, часть {} из {n}", i + 1)
+                crate::trf!("Дайджест, часть {} из {n}", "Digest, part {} of {n}", i + 1)
             };
             match self
-                .send_file(&name, part.into_bytes(), &cap, silent, first)
+                .send_file(chat, &name, part.into_bytes(), &cap, silent, first)
                 .await
             {
                 Outcome::Sent(id) => first = first.or(id),
@@ -212,8 +227,27 @@ impl Sender {
         Outcome::Sent(first)
     }
 
-    async fn apply(&mut self, ids: &[i64], attempts: i64, outcome: Outcome) -> Result<bool> {
+    async fn apply(
+        &mut self,
+        chat: Option<i64>,
+        ids: &[i64],
+        attempts: i64,
+        outcome: Outcome,
+    ) -> Result<bool> {
         match outcome {
+            Outcome::Migrated(to) => {
+                if let Some(from) = chat {
+                    self.app.move_chat(from, to).await?;
+                }
+                Ok(false)
+            }
+            Outcome::Blocked(e) if chat.is_some() => {
+                tracing::warn!(reason = %e, "group or channel unavailable, its queue dropped");
+                if let Some(c) = chat {
+                    self.app.db.drop_chat(c).await?;
+                }
+                Ok(false)
+            }
             Outcome::Sent(msg) => {
                 self.app.db.mark_sent(ids, msg).await?;
                 if self.blocked_logged {
@@ -278,8 +312,11 @@ impl Sender {
             self.app.db.meta_del("expired_unreported").await?;
             let ev = Event::service(
                 format!("bot:expired:{}", crate::now()),
-                "Часть уведомлений не доставлена",
-                format!("{n} событий ждали отправки дольше 30 дней (бот был заблокирован или чат не начат) и удалены."),
+                crate::tr!("Часть уведомлений не доставлена", "Some notifications were not delivered"),
+                crate::trf!(
+                    "{n} событий ждали отправки дольше 30 дней (бот был заблокирован или чат не начат) и удалены.",
+                    "{n} events waited longer than 30 days (the bot was blocked or the chat not started) and were removed."
+                ),
             );
             self.app.db.enqueue(&ev).await?;
         }
@@ -294,25 +331,26 @@ impl Sender {
         if rows.is_empty() {
             return Ok(false);
         }
-        let silent_hours = self.quiet_now();
+        let silent_hours = Self::quiet_now();
         let mut sent_any = false;
-        let mut events = Vec::new();
+        let mut events: std::collections::BTreeMap<Option<i64>, Vec<OutboxRow>> =
+            std::collections::BTreeMap::new();
         for row in rows {
             let attempts = row.attempts;
             if row.kind == KIND_EVENT {
-                events.push(row);
+                events.entry(row.chat_id).or_default().push(row);
                 continue;
             }
-            let id = row.id;
+            let (id, chat) = (row.id, row.chat_id);
             let outcome = if row.kind == KIND_REPLY {
-                self.send_text(&row.body, false, None).await
+                self.send_text(chat, &row.body, false, None).await
             } else {
                 match decode(row) {
                     Some(d) => self.send_single(&d, silent_hours).await?,
                     None => Outcome::Drop("cannot decode queued event".into()),
                 }
             };
-            let ok = self.apply(&[id], attempts, outcome).await?;
+            let ok = self.apply(chat, &[id], attempts, outcome).await?;
             sent_any |= ok;
             if !ok {
                 return Ok(sent_any);
@@ -325,8 +363,23 @@ impl Sender {
         if events.is_empty() || pause_state(&self.app).await?.is_some() {
             return Ok(sent_any);
         }
+        for (chat, rows) in events {
+            sent_any |= self.send_events(chat, rows, now, silent_hours).await?;
+        }
+        Ok(sent_any)
+    }
+
+    /// Sends the due events of one chat, as single messages or one digest.
+    async fn send_events(
+        &mut self,
+        chat: Option<i64>,
+        rows: Vec<OutboxRow>,
+        now: i64,
+        silent_hours: bool,
+    ) -> Result<bool> {
+        let mut sent_any = false;
         let mut ready = Vec::new();
-        for row in events {
+        for row in rows {
             if let Some(partner) = row.reply_to {
                 if self
                     .app
@@ -346,23 +399,24 @@ impl Sender {
             }
         }
         let Some(oldest) = ready.iter().map(|d| d.row.created_at).min() else {
-            return Ok(sent_any);
+            return Ok(false);
         };
         let cfg = self.app.cfg();
         let window = i64::try_from(cfg.digest.window_seconds).unwrap_or(20);
         if now - oldest < window {
-            return Ok(sent_any);
+            return Ok(false);
         }
         if ready.len() > cfg.digest.threshold {
             let ids: Vec<i64> = ready.iter().map(|d| d.row.id).collect();
             let attempts = ready.iter().map(|d| d.row.attempts).max().unwrap_or(0);
-            let outcome = self.send_digest(&ready, silent_hours).await;
-            sent_any |= self.apply(&ids, attempts, outcome).await?;
-            return Ok(sent_any);
+            let outcome = self.send_digest(chat, &ready, silent_hours).await;
+            return self.apply(chat, &ids, attempts, outcome).await;
         }
         for d in &ready {
             let outcome = self.send_single(d, silent_hours).await?;
-            let ok = self.apply(&[d.row.id], d.row.attempts, outcome).await?;
+            let ok = self
+                .apply(chat, &[d.row.id], d.row.attempts, outcome)
+                .await?;
             sent_any |= ok;
             if !ok {
                 break;
@@ -392,6 +446,7 @@ fn classify(r: Result<i64, TgError>) -> Outcome {
         Ok(id) => Outcome::Sent(Some(id)),
         Err(TgError::RetryAfter(s)) => Outcome::Wait(s),
         Err(TgError::Blocked(e)) => Outcome::Blocked(e),
+        Err(TgError::Migrated(id)) => Outcome::Migrated(id),
         Err(TgError::BadRequest(e)) => Outcome::Drop(e),
         Err(e @ (TgError::Network(_) | TgError::Unauthorized)) => Outcome::Retry(e.to_string()),
     }

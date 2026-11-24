@@ -312,7 +312,10 @@ impl GuidesPoller {
                         "guides_parser",
                         &e,
                         3,
-                        "вёрстка Steam изменилась, нужен новый парсер",
+                        crate::tr!(
+                            "вёрстка Steam изменилась, нужен новый парсер",
+                            "Steam page layout changed, the parser needs an update"
+                        ),
                     )
                     .await;
                 return Ok(());
@@ -323,7 +326,10 @@ impl GuidesPoller {
                         "guides",
                         &e.to_string(),
                         3,
-                        "проверьте доступность Steam; бот повторит сам",
+                        crate::tr!(
+                            "проверьте доступность Steam; бот повторит сам",
+                            "check that Steam is reachable; the bot retries by itself"
+                        ),
                     )
                     .await;
                 return Ok(());
@@ -422,10 +428,11 @@ impl GuidesPoller {
         if first_run {
             db.meta_set("guides_baseline", "1").await?;
             let ev = Event::service(
-                "bot:guides_baseline",
-                "Руководства взяты под наблюдение",
-                format!(
+                format!("bot:guides_baseline:{now}"),
+                crate::tr!("Руководства взяты под наблюдение", "Guides are now watched"),
+                crate::trf!(
                     "Руководств: {}. Существующие комментарии сохранены без уведомлений, дальше приходят только новые и удалённые.",
+                    "Guides: {}. Existing comments were saved silently, only new and deleted ones are reported from now on.",
                     listed.len()
                 ),
             );
@@ -438,7 +445,10 @@ impl GuidesPoller {
                         "guides_parser",
                         &e,
                         3,
-                        "вёрстка Steam могла измениться, проверьте страницу руководства",
+                        crate::tr!(
+                            "вёрстка Steam могла измениться, проверьте страницу руководства",
+                            "Steam page layout may have changed, check the guide page"
+                        ),
                     )
                     .await;
             }
@@ -451,7 +461,10 @@ impl GuidesPoller {
                         "guides",
                         &e,
                         3,
-                        "проверьте доступность steamcommunity.com; бот повторит сам",
+                        crate::tr!(
+                            "проверьте доступность steamcommunity.com; бот повторит сам",
+                            "check that steamcommunity.com is reachable; the bot retries by itself"
+                        ),
                     )
                     .await;
             }
@@ -462,15 +475,18 @@ impl GuidesPoller {
 
     async fn list_api_or_html(&self, health: &Health) -> Result<Vec<ListedGuide>, ReadError> {
         let steam = &self.steam;
+        if !steam.has_key() {
+            return self.list_html(steam).await;
+        }
         match self.list_api(steam).await {
             Ok(l) => Ok(l),
             Err(SteamError::BadKey) => {
                 health
                     .fail(
                         "guides",
-                        "ключ Steam Web API отклонён",
+                        crate::tr!("ключ Steam Web API отклонён", "Steam Web API key rejected"),
                         1,
-                        "проверьте HQW_STEAM_API_KEY; пока список берётся со страницы профиля",
+                        crate::tr!("проверьте HQW_STEAM_API_KEY; пока список берётся со страницы профиля", "check HQW_STEAM_API_KEY; meanwhile the list is read from the profile page"),
                     )
                     .await;
                 self.list_html(steam).await

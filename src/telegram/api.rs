@@ -22,6 +22,8 @@ pub enum TgError {
     BadRequest(String),
     #[error("token rejected")]
     Unauthorized,
+    #[error("group became a supergroup {0}")]
+    Migrated(i64),
     #[error("{0}")]
     Network(String),
 }
@@ -41,6 +43,7 @@ struct Reply<T> {
 #[derive(Deserialize)]
 struct ReplyParams {
     retry_after: Option<u64>,
+    migrate_to_chat_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,6 +73,39 @@ pub struct Message {
     pub from: Option<User>,
     #[serde(default)]
     pub text: Option<String>,
+    #[serde(default)]
+    pub migrate_to_chat_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallbackQuery {
+    pub id: String,
+    pub from: User,
+    #[serde(default)]
+    pub message: Option<CallbackMessage>,
+    #[serde(default)]
+    pub data: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallbackMessage {
+    pub message_id: i64,
+    pub chat: Chat,
+}
+
+/// Inline keyboard: rows of (label, callback data).
+pub type Keyboard = Vec<Vec<(String, String)>>;
+
+fn markup(kb: &Keyboard) -> serde_json::Value {
+    let rows: Vec<Vec<serde_json::Value>> = kb
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|(label, data)| json!({"text": label, "callback_data": data}))
+                .collect()
+        })
+        .collect();
+    json!({ "inline_keyboard": rows })
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -91,6 +127,8 @@ pub struct Update {
     pub message: Option<Message>,
     #[serde(default)]
     pub my_chat_member: Option<ChatMemberUpdated>,
+    #[serde(default)]
+    pub callback_query: Option<CallbackQuery>,
 }
 
 #[derive(Deserialize)]
@@ -142,6 +180,9 @@ impl TelegramApi {
         }
         let desc =
             crate::text::clean_line(reply.description.as_deref().unwrap_or("unknown error"), 200);
+        if let Some(to) = reply.parameters.as_ref().and_then(|p| p.migrate_to_chat_id) {
+            return Err(TgError::Migrated(to));
+        }
         Err(
             match reply.error_code.unwrap_or(i64::from(status.as_u16())) {
                 429 => {
@@ -165,7 +206,7 @@ impl TelegramApi {
             "offset": offset,
             "timeout": wait,
             "limit": 100,
-            "allowed_updates": ["message", "my_chat_member"],
+            "allowed_updates": ["message", "my_chat_member", "callback_query"],
         });
         self.call(
             "getUpdates",
@@ -244,6 +285,65 @@ impl TelegramApi {
             )
             .await?;
         Ok(sent.message_id)
+    }
+
+    /// Message with an inline keyboard, sent at once (not through the queue).
+    pub async fn send_menu(&self, chat: i64, html: &str, kb: &Keyboard) -> Result<i64, TgError> {
+        let body = json!({
+            "chat_id": chat,
+            "text": html,
+            "parse_mode": "HTML",
+            "link_preview_options": {"is_disabled": true},
+            "reply_markup": markup(kb),
+        });
+        let sent: Sent = self
+            .call("sendMessage", |r| r.json(&body), Duration::from_secs(30))
+            .await?;
+        Ok(sent.message_id)
+    }
+
+    /// Replaces the text and keyboard of a menu message.
+    pub async fn edit_menu(
+        &self,
+        chat: i64,
+        message_id: i64,
+        html: &str,
+        kb: &Keyboard,
+    ) -> Result<(), TgError> {
+        let body = json!({
+            "chat_id": chat,
+            "message_id": message_id,
+            "text": html,
+            "parse_mode": "HTML",
+            "link_preview_options": {"is_disabled": true},
+            "reply_markup": markup(kb),
+        });
+        match self
+            .call::<serde_json::Value>(
+                "editMessageText",
+                |r| r.json(&body),
+                Duration::from_secs(30),
+            )
+            .await
+        {
+            Err(TgError::BadRequest(e)) if e.contains("message is not modified") => Ok(()),
+            other => other.map(|_| ()),
+        }
+    }
+
+    pub async fn answer_callback(&self, id: &str, text: Option<&str>) -> Result<(), TgError> {
+        let mut body = json!({ "callback_query_id": id });
+        if let (Some(t), Some(obj)) = (text, body.as_object_mut()) {
+            obj.insert("text".into(), json!(t));
+        }
+        let _: bool = self
+            .call(
+                "answerCallbackQuery",
+                |r| r.json(&body),
+                Duration::from_secs(20),
+            )
+            .await?;
+        Ok(())
     }
 
     pub async fn leave_chat(&self, chat: i64) -> Result<bool, TgError> {

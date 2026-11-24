@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT o.id FROM outbox o\n                   WHERE o.merge_app = ? AND o.merge_kind = ? AND o.chat_id IS ? AND o.created_at >= ? AND o.reply_to IS NULL\n                     AND NOT EXISTS (SELECT 1 FROM outbox r WHERE r.reply_to = o.id AND r.merge_kind = ?)\n                   ORDER BY o.id DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7275fb6af0adfd656585130fc3b1ee06ca05224f8cf6e9b730e2ef691a27884d"
+}

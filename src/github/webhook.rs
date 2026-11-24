@@ -68,7 +68,6 @@ pub struct Endpoint {
     key: ring::hmac::Key,
     limiter: Mutex<Limiter>,
     bad_signatures: Mutex<(i64, u32, i64)>,
-    last_refresh: Mutex<i64>,
 }
 
 fn empty(status: StatusCode) -> Response<Full<Bytes>> {
@@ -104,19 +103,15 @@ pub fn signature_valid(key: &ring::hmac::Key, header_value: Option<&str>, body: 
 }
 
 impl Endpoint {
-    pub fn new(app: Arc<App>) -> Self {
-        let cfg = app.cfg();
-        let key = ring::hmac::Key::new(
-            ring::hmac::HMAC_SHA256,
-            app.secrets.github_webhook_secret.expose_secret(),
-        );
+    pub fn new(app: Arc<App>, w: &crate::config::Webhook, secret: &[u8]) -> Self {
+        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret);
         Self {
-            path: cfg.webhook.path.clone(),
-            max_body: cfg.webhook.max_body_bytes,
-            ip_filter: cfg.webhook.ip_filter,
-            trusted: cfg.webhook.trusted_proxies.clone(),
+            path: w.path.clone(),
+            max_body: w.max_body_bytes,
+            ip_filter: w.ip_filter,
+            trusted: w.trusted_proxies.clone(),
             limiter: Mutex::new(Limiter {
-                per_minute: cfg.webhook.requests_per_minute,
+                per_minute: w.requests_per_minute,
                 window: 0,
                 total: 0,
                 ips: HashMap::new(),
@@ -124,7 +119,6 @@ impl Endpoint {
             key,
             app,
             bad_signatures: Mutex::new((0, 0, 0)),
-            last_refresh: Mutex::new(0),
         }
     }
 
@@ -193,32 +187,16 @@ impl Endpoint {
         if alert {
             let ev = crate::event::Event::service(
                 format!("bot:badsig:{}", now / 3600),
-                "Вебхук: много запросов с неверной подписью",
-                "За последний час пришло больше 10 запросов с неверной подписью. Возможна атака или изменился секрет вебхука. Если секрет меняли, обновите HQW_GITHUB_WEBHOOK_SECRET.",
+                crate::tr!("Вебхук: много запросов с неверной подписью", "Webhook: many requests with a bad signature"),
+                crate::tr!(
+                    "За последний час пришло больше 10 запросов с неверной подписью. Возможна атака или изменился секрет вебхука. Если секрет меняли, обновите HQW_GITHUB_WEBHOOK_SECRET.",
+                    "More than 10 requests with a bad signature in the last hour. This may be an attack or a changed webhook secret. If the secret was changed, update HQW_GITHUB_WEBHOOK_SECRET."
+                ),
             );
             if let Err(e) = self.app.db.enqueue(&ev).await {
                 tracing::error!(error = %e, "cannot queue alert");
             }
         }
-    }
-
-    async fn refresh_installations_once_a_minute(&self) {
-        let now = crate::now();
-        {
-            let mut last = self
-                .last_refresh
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if now - *last < 60 {
-                return;
-            }
-            *last = now;
-        }
-        let _ = tokio::time::timeout(
-            Duration::from_secs(5),
-            super::reconcile::refresh_installations(&self.app),
-        )
-        .await;
     }
 
     async fn handle(&self, req: Request<Incoming>, peer: SocketAddr) -> Response<Full<Bytes>> {
@@ -260,17 +238,13 @@ impl Endpoint {
             self.note_bad_signature().await;
             return empty(StatusCode::UNAUTHORIZED);
         }
-        let event = header(&headers, "x-github-event").filter(|e| {
-            !e.is_empty() && e.len() <= 64 && e.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
-        });
-        let guid = header(&headers, "x-github-delivery").filter(|g| {
-            !g.is_empty() && g.len() <= 64 && g.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
-        });
+        let event = header(&headers, "x-github-event").filter(|e| valid_event_name(e));
+        let guid = header(&headers, "x-github-delivery").filter(|g| valid_guid(g));
         let (Some(event), Some(guid)) = (event, guid) else {
             return empty(StatusCode::BAD_REQUEST);
         };
         self.app.health.ok("webhook").await;
-        match self.process(event, guid, &body).await {
+        match process(&self.app, event, guid, &body).await {
             Ok(()) => empty(StatusCode::OK),
             Err(e) => {
                 tracing::error!(delivery = %guid, error = %e, "webhook not stored");
@@ -278,60 +252,91 @@ impl Endpoint {
             }
         }
     }
+}
 
-    async fn process(&self, event: &str, guid: &str, body: &[u8]) -> Result<()> {
-        let cfg = self.app.cfg();
-        let mut known = self.app.known_installations();
-        let mut outcome = None;
-        for attempt in 0..2 {
-            let ctx = payload::Context {
-                admin_id: self.app.secrets.github_admin_id,
-                options: &cfg.github,
-                known_installations: &known,
-            };
-            match payload::parse(event, body, &ctx) {
-                Ok(o) if o.unknown_installation && attempt == 0 => {
-                    self.refresh_installations_once_a_minute().await;
-                    known = self.app.known_installations();
-                }
-                Ok(o) => {
-                    outcome = Some(o);
-                    break;
-                }
-                Err(e) => {
-                    tracing::warn!(delivery = %guid, event = %event, error = %log_safe(&e.to_string()), "webhook payload rejected");
-                    self.app.db.accept_delivery(guid, &[]).await?;
-                    return Ok(());
-                }
+static LAST_REFRESH: Mutex<i64> = Mutex::new(0);
+
+async fn refresh_installations_once_a_minute(app: &App) {
+    let now = crate::now();
+    {
+        let mut last = LAST_REFRESH
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if now - *last < 60 {
+            return;
+        }
+        *last = now;
+    }
+    let _ = tokio::time::timeout(
+        Duration::from_secs(5),
+        super::reconcile::refresh_installations(app),
+    )
+    .await;
+}
+
+pub fn valid_event_name(e: &str) -> bool {
+    !e.is_empty() && e.len() <= 64 && e.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+}
+
+pub fn valid_guid(g: &str) -> bool {
+    !g.is_empty() && g.len() <= 64 && g.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
+}
+
+/// Parses one delivery and stores its events; shared by the webhook and the poller.
+pub async fn process(app: &Arc<App>, event: &str, guid: &str, body: &[u8]) -> Result<()> {
+    let Some(gh) = app.secrets.github.as_ref() else {
+        return Ok(());
+    };
+    let options = app.github_options();
+    let mut known = app.known_installations();
+    let mut outcome = None;
+    for attempt in 0..2 {
+        let ctx = payload::Context {
+            admin_id: gh.admin_id,
+            options: &options,
+            known_installations: &known,
+        };
+        match payload::parse(event, body, &ctx) {
+            Ok(o) if o.unknown_installation && attempt == 0 => {
+                refresh_installations_once_a_minute(app).await;
+                known = app.known_installations();
+            }
+            Ok(o) => {
+                outcome = Some(o);
+                break;
+            }
+            Err(e) => {
+                tracing::warn!(delivery = %guid, event = %event, error = %log_safe(&e.to_string()), "webhook payload rejected");
+                app.db.accept_delivery(guid, &[]).await?;
+                return Ok(());
             }
         }
-        let Some(outcome) = outcome else {
-            return Ok(());
-        };
-        if outcome.unknown_installation {
-            tracing::warn!(delivery = %guid, "webhook from unknown installation dropped");
-        }
-        if let Some(reason) = outcome.ignored {
-            tracing::debug!(delivery = %guid, event = %event, reason, "webhook ignored");
-        }
-        let fresh = self.app.db.accept_delivery(guid, &outcome.events).await?;
-        if fresh && (!outcome.repos_added.is_empty() || !outcome.repos_removed.is_empty()) {
-            self.app
-                .db
-                .apply_repos(&outcome.repos_added, &outcome.repos_removed, &[])
-                .await?;
-        }
-        if fresh && outcome.installation_changed {
-            let app = Arc::clone(&self.app);
-            tokio::spawn(async move {
-                if let Err(e) = super::reconcile::refresh_installations(&app).await {
-                    tracing::warn!(error = %e, "installation refresh failed");
-                }
-            });
-        }
-        tracing::info!(delivery = %guid, event = %event, events = outcome.events.len(), fresh, "webhook accepted");
-        Ok(())
     }
+    let Some(outcome) = outcome else {
+        return Ok(());
+    };
+    if outcome.unknown_installation {
+        tracing::warn!(delivery = %guid, "webhook from unknown installation dropped");
+    }
+    if let Some(reason) = outcome.ignored {
+        tracing::debug!(delivery = %guid, event = %event, reason, "webhook ignored");
+    }
+    let fresh = app.db.accept_delivery(guid, &outcome.events).await?;
+    if fresh && (!outcome.repos_added.is_empty() || !outcome.repos_removed.is_empty()) {
+        app.db
+            .apply_repos(&outcome.repos_added, &outcome.repos_removed, &[])
+            .await?;
+    }
+    if fresh && outcome.installation_changed {
+        let app = Arc::clone(app);
+        tokio::spawn(async move {
+            if let Err(e) = super::reconcile::refresh_installations(&app).await {
+                tracing::warn!(error = %e, "installation refresh failed");
+            }
+        });
+    }
+    tracing::info!(delivery = %guid, event = %event, events = outcome.events.len(), fresh, "delivery accepted");
+    Ok(())
 }
 
 /// Reloads the certificate when the files change.
@@ -375,9 +380,11 @@ fn mtime(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
-fn tls_acceptor(app: &Arc<App>) -> Result<Option<tokio_rustls::TlsAcceptor>> {
-    let cfg = app.cfg();
-    let Some(tls) = cfg.webhook.tls.clone() else {
+fn tls_acceptor(
+    app: &Arc<App>,
+    w: &crate::config::Webhook,
+) -> Result<Option<tokio_rustls::TlsAcceptor>> {
+    let Some(tls) = w.tls.clone() else {
         return Ok(None);
     };
     let resolver = Arc::new(CertResolver {
@@ -423,13 +430,22 @@ fn tls_acceptor(app: &Arc<App>) -> Result<Option<tokio_rustls::TlsAcceptor>> {
 /// Runs until cancelled; in-flight requests get up to 10 seconds.
 pub async fn serve(app: Arc<App>) -> Result<()> {
     let cfg = app.cfg();
-    let listener = TcpListener::bind(cfg.webhook.listen)
+    let (Some(w), Some(secret)) = (
+        cfg.webhook.as_ref(),
+        app.secrets
+            .github
+            .as_ref()
+            .and_then(|g| g.webhook_secret.as_ref()),
+    ) else {
+        return Ok(());
+    };
+    let listener = TcpListener::bind(w.listen)
         .await
-        .with_context(|| format!("cannot listen on {}", cfg.webhook.listen))?;
-    let tls = tls_acceptor(&app)?;
-    let endpoint = Arc::new(Endpoint::new(Arc::clone(&app)));
-    let slots = Arc::new(Semaphore::new(cfg.webhook.max_connections));
-    tracing::info!(addr = %cfg.webhook.listen, tls = tls.is_some(), "webhook listening");
+        .with_context(|| format!("cannot listen on {}", w.listen))?;
+    let tls = tls_acceptor(&app, w)?;
+    let endpoint = Arc::new(Endpoint::new(Arc::clone(&app), w, secret.expose_secret()));
+    let slots = Arc::new(Semaphore::new(w.max_connections));
+    tracing::info!(addr = %w.listen, tls = tls.is_some(), "webhook listening");
     loop {
         let (stream, peer) = tokio::select! {
             () = app.cancel.cancelled() => break,
@@ -480,7 +496,7 @@ pub async fn serve(app: Arc<App>) -> Result<()> {
             let _ = tokio::time::timeout(CONN_TIMEOUT, fut).await;
         });
     }
-    let all = u32::try_from(cfg.webhook.max_connections).unwrap_or(u32::MAX);
+    let all = u32::try_from(w.max_connections).unwrap_or(u32::MAX);
     let _ = tokio::time::timeout(Duration::from_secs(10), slots.acquire_many(all)).await;
     tracing::info!("webhook stopped");
     Ok(())
