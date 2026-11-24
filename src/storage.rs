@@ -642,6 +642,7 @@ impl Db {
                 sqlx::query!("DELETE FROM news_seen WHERE appid = ?", appid)
                     .execute(&self.pool)
                     .await?;
+                self.meta_del(&format!("news_baseline:{appid}")).await?;
             }
         }
         Ok(())
@@ -967,6 +968,18 @@ mod tests {
             .unwrap());
         assert!(!db.accept_delivery("g1", &[ev]).await.unwrap());
         assert_eq!(db.pending_count().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn removed_game_forgets_news_baseline() {
+        let db = Db::memory().await.unwrap();
+        db.save_game(10, "G", "{}", &[], 0).await.unwrap();
+        db.save_news(10, &["1".to_owned()], &[], 0).await.unwrap();
+        db.meta_set("news_baseline:10", "1").await.unwrap();
+        db.forget_games_except(&[11]).await.unwrap();
+        assert!(db.game_state(10).await.unwrap().is_none());
+        assert_eq!(db.news_seen(10).await.unwrap().len(), 0);
+        assert!(db.meta_get("news_baseline:10").await.unwrap().is_none());
     }
 
     #[tokio::test]
