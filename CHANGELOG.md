@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-11-25
+
+### Fixed
+
+- Steam DLC info is read again: Steam sends DLC info without the access token, and 0.1.1 skipped it, so a new DLC came without its name and soundtracks were not recognized. Only a game itself answered without its token is skipped now.
+
 ## [0.1.1] - 2026-11-25
 
 ### Security

@@ -22,7 +22,7 @@
 | | |
 |---|---|
 | Platform | Bot: Linux x86_64/arm64 (Docker or systemd), Windows x64. Setup app: Windows, macOS, Linux |
-| Version | 0.1.1 |
+| Version | 0.1.2 |
 | License | GPL-3.0-or-later |
 | Languages | Bot messages in Russian, docs in English and Russian |
 
@@ -104,7 +104,7 @@ Requires Rust 1.99 (pinned in `rust-toolchain.toml`).
 ```sh
 cargo build --release --locked
 cargo test --locked
-docker build -t hq-watchman:0.1.1 .
+docker build -t hq-watchman:0.1.2 .
 cd setup && cargo build --release --locked
 ```
 
@@ -196,7 +196,7 @@ HQ Watchman – Telegram-бот для одного человека, котор
 ```sh
 cargo build --release --locked
 cargo test --locked
-docker build -t hq-watchman:0.1.1 .
+docker build -t hq-watchman:0.1.2 .
 cd setup && cargo build --release --locked
 ```
 

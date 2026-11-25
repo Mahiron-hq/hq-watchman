@@ -229,6 +229,14 @@ async fn fetch_states(
     let info = super::cm::fetch_product_info(steam.http(), appids).await?;
     let mut parsed = BTreeMap::new();
     for raw in &info.apps {
+        // A game without its token may lack private branches; DLC info is public anyway.
+        if raw.public_only {
+            tracing::warn!(
+                appid = raw.appid,
+                "PICS answered without the access token, game skipped this time"
+            );
+            continue;
+        }
         parsed.insert(raw.appid, (raw.change_number, parse_app_info(&raw.text)?));
     }
     let dlc_ids: BTreeSet<u32> = parsed

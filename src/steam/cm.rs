@@ -146,6 +146,8 @@ pub struct RawAppInfo {
     pub appid: u32,
     pub change_number: u32,
     pub text: String,
+    /// Answered without the access token, so private parts may be missing.
+    pub public_only: bool,
 }
 
 #[derive(Debug, Default)]
@@ -416,10 +418,6 @@ impl Session {
             info.unknown.extend(resp.unknown_appids);
             for app in resp.apps {
                 let appid = app.appid.ok_or_else(|| anyhow!("app info without appid"))?;
-                if app.missing_token == Some(true) {
-                    tracing::warn!(appid, "PICS answered without the access token, app skipped");
-                    continue;
-                }
                 let buffer = match app.buffer {
                     Some(b) if !b.is_empty() => {
                         check_inline(appid, &b, app.sha.as_deref(), app.size)?;
@@ -442,6 +440,7 @@ impl Session {
                     appid,
                     change_number: app.change_number.unwrap_or(0),
                     text,
+                    public_only: app.missing_token == Some(true),
                 });
             }
         }
