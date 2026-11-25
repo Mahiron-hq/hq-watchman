@@ -12,7 +12,7 @@ use super::render::{self, Item, MAX_MESSAGE};
 use crate::app::App;
 use crate::config::QuietHours;
 use crate::event::{Body, Event, Source};
-use crate::storage::{OutboxRow, KIND_EVENT, KIND_REPLY, STATUS_PENDING};
+use crate::storage::{OutboxRow, KIND_EVENT, KIND_PARTS, KIND_REPLY, STATUS_PENDING};
 
 const SEND_GAP: Duration = Duration::from_millis(1100);
 const MAX_AGE: i64 = 30 * 86_400;
@@ -68,8 +68,26 @@ fn decode(row: OutboxRow) -> Option<Decoded> {
     Some(Decoded { row, source, body })
 }
 
+/// One file of a long message.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct Part {
+    name: String,
+    caption: String,
+    text: String,
+}
+
+/// Files of a long message that are still to be sent, queued as their own row.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Rest {
+    parts: Vec<Part>,
+    reply_to: Option<i64>,
+    silent: bool,
+}
+
 enum Outcome {
     Sent(Option<i64>),
+    /// Some files went out; the rest is queued separately.
+    Partial(Option<i64>, Rest),
     Retry(String),
     Drop(String),
     Wait(u64),
@@ -152,35 +170,90 @@ impl Sender {
             render::md_entry(&d.body, d.row.occurred_at)
         );
         let caption = v.summary_html(render::MAX_CAPTION);
-        let parts = render::split_parts(&md, super::api::MAX_DOCUMENT);
-        let n = parts.len();
+        let texts = render::split_parts(&md, super::api::MAX_DOCUMENT);
+        let n = texts.len();
+        let parts: Vec<Part> = texts
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| Part {
+                name: render::file_name("event", d.row.occurred_at, Some((i + 1, n))),
+                caption: if i == 0 {
+                    caption.clone()
+                } else {
+                    crate::trf!("Часть {} из {n}", "Part {} of {n}", i + 1)
+                },
+                text,
+            })
+            .collect();
+        Ok(self
+            .send_parts(d.row.chat_id, parts, silent, reply_to)
+            .await)
+    }
+
+    /// Sends files in order, later ones as replies to the first. After a failure past the
+    /// first file the unsent ones are handed back to be queued, so nothing goes out twice.
+    async fn send_parts(
+        &self,
+        chat: Option<i64>,
+        parts: Vec<Part>,
+        silent: bool,
+        reply_to: Option<i64>,
+    ) -> Outcome {
         let mut first = None;
-        for (i, part) in parts.into_iter().enumerate() {
-            let name = render::file_name("event", d.row.occurred_at, Some((i + 1, n)));
-            let cap = if i == 0 {
-                caption.clone()
-            } else {
-                crate::trf!("Часть {} из {n}", "Part {} of {n}", i + 1)
-            };
+        for (i, part) in parts.iter().enumerate() {
+            let target = if i == 0 { reply_to } else { reply_to.or(first) };
             match self
                 .send_file(
-                    d.row.chat_id,
-                    &name,
-                    part.into_bytes(),
-                    &cap,
+                    chat,
+                    &part.name,
+                    part.text.clone().into_bytes(),
+                    &part.caption,
                     silent,
-                    reply_to.or(first),
+                    target,
                 )
                 .await
             {
-                Outcome::Sent(id) => {
-                    first = first.or(id);
+                Outcome::Sent(id) => first = first.or(id),
+                other if i == 0 => return other,
+                _ => {
+                    return Outcome::Partial(
+                        first,
+                        Rest {
+                            parts: parts.get(i..).unwrap_or_default().to_vec(),
+                            reply_to: reply_to.or(first),
+                            silent,
+                        },
+                    )
                 }
-                other => return Ok(other),
             }
-            tokio::time::sleep(SEND_GAP).await;
+            if i + 1 < parts.len() {
+                tokio::time::sleep(SEND_GAP).await;
+            }
         }
-        Ok(Outcome::Sent(first))
+        Outcome::Sent(first)
+    }
+
+    /// The queued rest of a long message.
+    async fn send_rest(&self, row: &OutboxRow) -> Result<Outcome> {
+        let Ok(rest) = serde_json::from_str::<Rest>(&row.body) else {
+            return Ok(Outcome::Drop("cannot decode queued parts".into()));
+        };
+        Ok(
+            match self
+                .send_parts(row.chat_id, rest.parts, rest.silent, rest.reply_to)
+                .await
+            {
+                Outcome::Partial(_, left) => {
+                    let n = left.parts.len();
+                    self.app
+                        .db
+                        .set_body(row.id, &serde_json::to_string(&left)?)
+                        .await?;
+                    Outcome::Retry(format!("{n} part(s) of a long message left"))
+                }
+                other => other,
+            },
+        )
     }
 
     async fn send_digest(&self, chat: Option<i64>, list: &[Decoded], silent: bool) -> Outcome {
@@ -204,27 +277,23 @@ impl Sender {
             .unwrap_or_else(crate::now);
         let md = render::digest_markdown(&items, from, to);
         let caption = render::digest_summary(&items);
-        let parts = render::split_parts(&md, super::api::MAX_DOCUMENT);
-        let n = parts.len();
+        let texts = render::split_parts(&md, super::api::MAX_DOCUMENT);
+        let n = texts.len();
         let now = crate::now();
-        let mut first = None;
-        for (i, part) in parts.into_iter().enumerate() {
-            let name = render::file_name("digest", now, Some((i + 1, n)));
-            let cap = if i == 0 {
-                caption.clone()
-            } else {
-                crate::trf!("Дайджест, часть {} из {n}", "Digest, part {} of {n}", i + 1)
-            };
-            match self
-                .send_file(chat, &name, part.into_bytes(), &cap, silent, first)
-                .await
-            {
-                Outcome::Sent(id) => first = first.or(id),
-                other => return other,
-            }
-            tokio::time::sleep(SEND_GAP).await;
-        }
-        Outcome::Sent(first)
+        let parts: Vec<Part> = texts
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| Part {
+                name: render::file_name("digest", now, Some((i + 1, n))),
+                caption: if i == 0 {
+                    caption.clone()
+                } else {
+                    crate::trf!("Дайджест, часть {} из {n}", "Digest, part {} of {n}", i + 1)
+                },
+                text,
+            })
+            .collect();
+        self.send_parts(chat, parts, silent, None).await
     }
 
     async fn apply(
@@ -242,11 +311,44 @@ impl Sender {
                 Ok(false)
             }
             Outcome::Blocked(e) if chat.is_some() => {
-                tracing::warn!(reason = %e, "group or channel unavailable, its queue dropped");
+                tracing::warn!(reason = %e, "group or channel unavailable, removed from delivery");
                 if let Some(c) = chat {
+                    let title = crate::settings::current()
+                        .chats
+                        .iter()
+                        .find(|x| x.id == c)
+                        .map(|x| crate::text::clean_line(&x.title, 100));
+                    self.app
+                        .update_settings(|s| s.chats.retain(|x| x.id != c))
+                        .await?;
                     self.app.db.drop_chat(c).await?;
+                    if let Some(title) = title {
+                        self.app
+                            .db
+                            .enqueue(&Event::service(
+                                format!("bot:unavailable:{c}:{}", crate::now() / 60),
+                                crate::tr!("Чат недоступен", "Chat unavailable"),
+                                crate::trf!(
+                                    "«{title}»: Telegram не даёт боту туда писать, чат удалён из списка доставки. Добавьте бота заново, если это ошибка.",
+                                    "\"{title}\": Telegram does not let the bot post there, the chat was removed from delivery. Add the bot again if this is a mistake."
+                                ),
+                            ))
+                            .await?;
+                    }
                 }
                 Ok(false)
+            }
+            Outcome::Partial(msg, rest) => {
+                let key = format!(
+                    "parts:{}:{}",
+                    ids.first().copied().unwrap_or(0),
+                    crate::now()
+                );
+                self.app
+                    .db
+                    .mark_sent_with_rest(ids, msg, &key, chat, &serde_json::to_string(&rest)?)
+                    .await?;
+                Ok(true)
             }
             Outcome::Sent(msg) => {
                 self.app.db.mark_sent(ids, msg).await?;
@@ -344,6 +446,8 @@ impl Sender {
             let (id, chat) = (row.id, row.chat_id);
             let outcome = if row.kind == KIND_REPLY {
                 self.send_text(chat, &row.body, false, None).await
+            } else if row.kind == KIND_PARTS {
+                self.send_rest(&row).await?
             } else {
                 match decode(row) {
                     Some(d) => self.send_single(&d, silent_hours).await?,

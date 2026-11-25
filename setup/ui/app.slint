@@ -51,6 +51,7 @@ export global S {
     in-out property <string> tg-admin;
     in-out property <string> tg-admin-name;
     in-out property <bool> tg-waiting;
+    in-out property <string> tg-code;
 
     // github
     in-out property <string> gh-login;
@@ -115,6 +116,7 @@ export global S {
     callback pick-key();
     callback pick-folder();
     callback server-test();
+    callback server-changed();
     callback tg-check();
     callback tg-wait();
     callback tg-cancel();
@@ -304,27 +306,27 @@ component ServerFields inherits VerticalLayout {
         Field {
             horizontal-stretch: 3;
             label: Tr.t("Адрес сервера (IP или имя)", "Server address (IP or name)");
-            Edit { text <=> S.host; placeholder-text: "203.0.113.10"; }
+            Edit { text <=> S.host; placeholder-text: "203.0.113.10"; edited(t) => { S.server-changed(); } }
         }
         Field {
             horizontal-stretch: 1;
             label: Tr.t("Порт SSH", "SSH port");
-            Edit { text <=> S.port; input-type: number; }
+            Edit { text <=> S.port; input-type: number; edited(t) => { S.server-changed(); } }
         }
         Field {
             horizontal-stretch: 2;
             label: Tr.t("Пользователь", "User");
-            Edit { text <=> S.user; }
+            Edit { text <=> S.user; edited(t) => { S.server-changed(); } }
         }
     }
     HorizontalLayout {
         spacing: 16px;
-        CheckBox { text: Tr.t("Вход по паролю", "Password login"); checked: !S.auth-key; toggled => { S.auth-key = !self.checked; } }
-        CheckBox { text: Tr.t("Вход по ключу SSH", "SSH key login"); checked: S.auth-key; toggled => { S.auth-key = self.checked; } }
+        CheckBox { text: Tr.t("Вход по паролю", "Password login"); checked: !S.auth-key; toggled => { S.auth-key = !self.checked; S.server-changed(); } }
+        CheckBox { text: Tr.t("Вход по ключу SSH", "SSH key login"); checked: S.auth-key; toggled => { S.auth-key = self.checked; S.server-changed(); } }
     }
     if !S.auth-key: Field {
         label: Tr.t("Пароль (не сохраняется)", "Password (not saved)");
-        Edit { text <=> S.password; input-type: password; }
+        Edit { text <=> S.password; input-type: password; edited(t) => { S.server-changed(); } }
     }
     if S.auth-key: HorizontalLayout {
         spacing: 10px;
@@ -333,19 +335,19 @@ component ServerFields inherits VerticalLayout {
             label: Tr.t("Файл ключа", "Key file");
             HorizontalLayout {
                 spacing: 6px;
-                Edit { text <=> S.key-path; }
+                Edit { text <=> S.key-path; edited(t) => { S.server-changed(); } }
                 Button { text: "…"; clicked => { S.pick-key(); } }
             }
         }
         Field {
             horizontal-stretch: 2;
             label: Tr.t("Пароль ключа, если есть", "Key passphrase, if any");
-            Edit { text <=> S.key-pass; input-type: password; }
+            Edit { text <=> S.key-pass; input-type: password; edited(t) => { S.server-changed(); } }
         }
     }
     if S.user != "root": Field {
         label: Tr.t("Пароль sudo (пусто: как пароль входа)", "sudo password (empty: same as login password)");
-        Edit { text <=> S.sudo-pass; input-type: password; }
+        Edit { text <=> S.sudo-pass; input-type: password; edited(t) => { S.server-changed(); } }
     }
 }
 
@@ -403,15 +405,16 @@ component TelegramPage inherits VerticalLayout {
     if S.tg-bot != "": Ok { text: Tr.t("Бот найден: @", "Bot found: @") + S.tg-bot; }
     if S.tg-bot != "": VerticalLayout {
         spacing: 8px;
-        Hint { text: Tr.t("2. Откройте своего бота и нажмите «Запустить» (Start). Так программа узнает ваш ID: только вы сможете управлять ботом.", "2. Open your bot and press Start. This tells the app your ID: only you will be able to control the bot."); }
+        Hint { text: Tr.t("2. Нажмите кнопку ниже: откроется ваш бот, нажмите в нём «Запустить» (Start). Бот получит одноразовый код, так программа узнает ваш ID: только вы сможете управлять ботом.", "2. Press the button below: your bot opens, press Start there. The bot receives a one-time code, so the app learns your ID: only you will be able to control the bot."); }
         HorizontalLayout {
             spacing: 10px;
             alignment: start;
-            Button { text: Tr.t("Открыть бота", "Open the bot"); clicked => { S.open-url("https://t.me/" + S.tg-bot); } }
-            if !S.tg-waiting: Button { text: Tr.t("Ждать нажатия Start", "Wait for Start"); clicked => { S.tg-wait(); } }
+            if !S.tg-waiting: Button { text: Tr.t("Открыть бота", "Open the bot"); clicked => { S.tg-wait(); } }
             if S.tg-waiting: Spinner { indeterminate: true; width: 24px; height: 24px; }
+            if S.tg-waiting: Button { text: Tr.t("Открыть снова", "Open again"); clicked => { S.open-url("https://t.me/" + S.tg-bot + "?start=" + S.tg-code); } }
             if S.tg-waiting: Button { text: Tr.t("Отмена", "Cancel"); clicked => { S.tg-cancel(); } }
         }
+        if S.tg-waiting: Hint { text: Tr.t("Если Telegram не открылся, отправьте боту @", "If Telegram did not open, send the bot @") + S.tg-bot + Tr.t(" сообщение: /start ", " this message: /start ") + S.tg-code; }
     }
     if S.tg-admin != "": Ok { text: Tr.t("Владелец: ", "Owner: ") + S.tg-admin-name + " (ID " + S.tg-admin + ")"; }
     Field {

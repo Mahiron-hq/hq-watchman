@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM news_seen WHERE seen_at < ? AND rowid NOT IN\n               (SELECT n.rowid FROM news_seen n WHERE n.appid = news_seen.appid ORDER BY n.seen_at DESC, n.rowid DESC LIMIT 100)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "69e254ab140fd3aecef36b4c1758e8a80edbf162208fd00ef317aedd7c8b7c15"
+}

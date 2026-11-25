@@ -225,10 +225,10 @@ impl GithubApi {
             let n = list.len();
             out.extend(list);
             if n < 100 {
-                break;
+                return Ok(out);
             }
         }
-        Ok(out)
+        Err(GhError::Other("more than 1000 installations".into()))
     }
 
     async fn installation_token(&self, installation: u64) -> Result<SecretString, GhError> {
@@ -255,9 +255,11 @@ impl GithubApi {
         Ok(token)
     }
 
-    pub async fn repositories(&self, installation: u64) -> Result<Vec<ApiRepo>, GhError> {
+    /// Repositories of an installation and whether the list is complete.
+    pub async fn repositories(&self, installation: u64) -> Result<(Vec<ApiRepo>, bool), GhError> {
         let token = self.installation_token(installation).await?;
         let mut out = Vec::new();
+        let mut read = 0usize;
         for page in 1..=50 {
             let (_, body) = self
                 .call(
@@ -270,20 +272,22 @@ impl GithubApi {
             let p: RepoPage = serde_json::from_slice(&body)
                 .map_err(|e| GhError::Other(format!("bad JSON: {e}")))?;
             let n = p.repositories.len();
+            read += n;
             out.extend(
                 p.repositories
                     .into_iter()
                     .filter(|r| valid_full_name(&r.full_name)),
             );
-            if n == 0 || out.len() >= p.total_count {
-                break;
+            if n == 0 || read >= p.total_count {
+                return Ok((out, true));
             }
         }
-        Ok(out)
+        Ok((out, false))
     }
 
-    /// Webhook deliveries newer than `since` (unix seconds), newest first.
-    pub async fn deliveries(&self, since: i64) -> Result<Vec<Delivery>, GhError> {
+    /// Webhook deliveries newer than `since` (unix seconds), newest first, and whether
+    /// the list reaches back to `since`.
+    pub async fn deliveries(&self, since: i64) -> Result<(Vec<Delivery>, bool), GhError> {
         let mut out = Vec::new();
         let mut cursor: Option<String> = None;
         for _ in 0..30 {
@@ -303,10 +307,10 @@ impl GithubApi {
             }
             cursor = next_cursor(&headers);
             if done || cursor.is_none() {
-                break;
+                return Ok((out, true));
             }
         }
-        Ok(out)
+        Ok((out, false))
     }
 
     /// Full delivery including the payload GitHub tried to send.

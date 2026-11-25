@@ -145,9 +145,10 @@ impl Endpoint {
             .unwrap_or(peer)
     }
 
-    fn ip_allowed(&self, ip: IpAddr) -> bool {
+    /// `None` while the GitHub ranges are not loaded yet.
+    fn ip_allowed(&self, ip: IpAddr) -> Option<bool> {
         if !self.ip_filter {
-            return true;
+            return Some(true);
         }
         let ranges = self
             .app
@@ -158,10 +159,9 @@ impl Endpoint {
             IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
             v4 @ IpAddr::V4(_) => v4,
         };
-        match ranges.as_ref() {
-            Some(nets) => nets.iter().any(|n| n.contains(&ip)),
-            None => true,
-        }
+        ranges
+            .as_ref()
+            .map(|nets| nets.iter().any(|n| n.contains(&ip)))
     }
 
     async fn note_bad_signature(&self) {
@@ -204,9 +204,16 @@ impl Endpoint {
             return empty(StatusCode::NOT_FOUND);
         }
         let ip = self.client_ip(peer.ip(), req.headers());
-        if !self.ip_allowed(ip) {
-            tracing::warn!(ip = %ip, "webhook from outside GitHub ranges");
-            return empty(StatusCode::NOT_FOUND);
+        match self.ip_allowed(ip) {
+            Some(true) => {}
+            Some(false) => {
+                tracing::warn!(ip = %ip, "webhook from outside GitHub ranges");
+                return empty(StatusCode::NOT_FOUND);
+            }
+            None => {
+                tracing::warn!(ip = %ip, "GitHub ranges not loaded yet, webhook refused for now");
+                return empty(StatusCode::SERVICE_UNAVAILABLE);
+            }
         }
         let allowed = self
             .limiter
@@ -321,12 +328,15 @@ pub async fn process(app: &Arc<App>, event: &str, guid: &str, body: &[u8]) -> Re
     if let Some(reason) = outcome.ignored {
         tracing::debug!(delivery = %guid, event = %event, reason, "webhook ignored");
     }
-    let fresh = app.db.accept_delivery(guid, &outcome.events).await?;
-    if fresh && (!outcome.repos_added.is_empty() || !outcome.repos_removed.is_empty()) {
-        app.db
-            .apply_repos(&outcome.repos_added, &outcome.repos_removed, &[])
-            .await?;
-    }
+    let fresh = app
+        .db
+        .accept_delivery_with_repos(
+            guid,
+            &outcome.events,
+            &outcome.repos_added,
+            &outcome.repos_removed,
+        )
+        .await?;
     if fresh && outcome.installation_changed {
         let app = Arc::clone(app);
         tokio::spawn(async move {

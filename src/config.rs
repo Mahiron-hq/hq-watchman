@@ -312,13 +312,13 @@ pub struct Strangers {
     pub retention_days: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tls {
     pub cert_file: PathBuf,
     pub key_file: PathBuf,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Webhook {
     pub listen: SocketAddr,
     pub path: String,
@@ -361,19 +361,9 @@ impl Config {
 
     /// Settings that need a restart and so cannot change on reload.
     pub fn restart_only_diff(&self, new: &Self) -> Vec<&'static str> {
+        // Keep in step with `keep_restart_only`.
         let mut out = Vec::new();
-        let key = |w: &Option<Webhook>| {
-            w.as_ref().map(|w| {
-                (
-                    w.listen,
-                    w.path.clone(),
-                    w.tls
-                        .as_ref()
-                        .map(|t| (t.cert_file.clone(), t.key_file.clone())),
-                )
-            })
-        };
-        if key(&self.webhook) != key(&new.webhook) {
+        if self.webhook != new.webhook {
             out.push("webhook");
         }
         if self.github.mode != new.github.mode {
@@ -389,6 +379,15 @@ impl Config {
             out.push("logging");
         }
         out
+    }
+
+    /// Takes over the running values of the settings that only change on restart.
+    pub fn keep_restart_only(&mut self, running: &Self) {
+        self.webhook.clone_from(&running.webhook);
+        self.github.mode = running.github.mode;
+        self.health.listen = running.health.listen;
+        self.storage.path.clone_from(&running.storage.path);
+        self.logging.clone_from(&running.logging);
     }
 }
 

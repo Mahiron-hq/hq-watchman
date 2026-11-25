@@ -1,6 +1,6 @@
 [package]
 name = "hq-watchman-setup"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.99"
 description = "Desktop app that installs, configures and updates HQ Watchman"

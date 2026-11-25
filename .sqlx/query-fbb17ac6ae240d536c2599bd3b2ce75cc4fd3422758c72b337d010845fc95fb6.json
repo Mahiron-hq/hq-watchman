@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO repos (id, full_name, private, installation_id) VALUES (?, ?, ?, ?)\n             ON CONFLICT(id) DO UPDATE SET full_name = excluded.full_name, private = excluded.private, installation_id = excluded.installation_id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "fbb17ac6ae240d536c2599bd3b2ce75cc4fd3422758c72b337d010845fc95fb6"
+}

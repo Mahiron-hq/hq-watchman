@@ -2,7 +2,7 @@ name: hq-watchman
 
 services:
   hq-watchman:
-    image: hq-watchman:0.1.0
+    image: hq-watchman:0.1.1
     container_name: hq-watchman
     restart: unless-stopped
     env_file:

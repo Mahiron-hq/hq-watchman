@@ -43,8 +43,12 @@ pub async fn telegram_bot(token: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("the bot has no user name"))
 }
 
-/// Waits until somebody sends /start to the bot; returns their ID and user name.
-pub async fn telegram_wait_start(token: &str, cancel: &Cancel) -> Result<(i64, String)> {
+/// Waits for `/start <code>` in a private chat; returns the sender's ID and user name.
+pub async fn telegram_wait_start(
+    token: &str,
+    code: &str,
+    cancel: &Cancel,
+) -> Result<(i64, String)> {
     let api = TelegramApi::new(http()?, secret(token));
     let mut offset = 0i64;
     while !cancelled(cancel) {
@@ -63,10 +67,7 @@ pub async fn telegram_wait_start(token: &str, cancel: &Cancel) -> Result<(i64, S
             offset = offset.max(u.update_id + 1);
             let Some(m) = u.message else { continue };
             let Some(from) = m.from else { continue };
-            let is_start = m
-                .text
-                .as_deref()
-                .is_some_and(|t| t.trim().starts_with("/start"));
+            let is_start = m.text.as_deref().is_some_and(|t| is_start_with(t, code));
             if m.chat.kind == "private" && !from.is_bot && is_start {
                 let _ = api.get_updates(offset, 0).await;
                 let name = from
@@ -77,6 +78,14 @@ pub async fn telegram_wait_start(token: &str, cancel: &Cancel) -> Result<(i64, S
         }
     }
     bail!("cancelled")
+}
+
+fn is_start_with(text: &str, code: &str) -> bool {
+    let mut words = text.split_whitespace();
+    let cmd = words.next().unwrap_or_default();
+    (cmd == "/start" || cmd.starts_with("/start@"))
+        && words.next() == Some(code)
+        && words.next().is_none()
 }
 
 pub async fn telegram_send(token: &str, chat: i64, text: &str) -> Result<()> {
@@ -387,6 +396,16 @@ pub async fn steam_key(key: &str, profile: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn start_needs_the_code() {
+        assert!(is_start_with("/start Ab12", "Ab12"));
+        assert!(is_start_with(" /start@my_bot Ab12 ", "Ab12"));
+        assert!(!is_start_with("/start", "Ab12"));
+        assert!(!is_start_with("/start Ab13", "Ab12"));
+        assert!(!is_start_with("/start Ab12 x", "Ab12"));
+        assert!(!is_start_with("/startAb12", "Ab12"));
+    }
 
     #[test]
     fn xml_values() {

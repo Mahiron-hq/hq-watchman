@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Installation on this Windows computer as a background task of the Task Scheduler.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -38,19 +39,36 @@ fn hidden(cmd: &mut Command) -> &mut Command {
     cmd
 }
 
+fn powershell() -> PathBuf {
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    Path::new(&root)
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe")
+}
+
+/// Text as a PowerShell single-quoted literal.
+fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
 /// Runs a PowerShell script elevated (one UAC prompt) and waits for it.
-fn run_elevated(script: &Path) -> Result<()> {
-    let inner = format!(
-        "-NoProfile -ExecutionPolicy Bypass -File \"{}\"",
-        script.display()
-    );
+/// The script goes on the command line, so no file of the user can stand in for it.
+fn run_elevated(body: &str) -> Result<()> {
+    use base64::Engine as _;
+    let script = format!("$ErrorActionPreference = 'Stop'\n{body}\n");
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
+    let ps = powershell();
     let outer = format!(
-        "$p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '{}'; exit $p.ExitCode",
-        inner.replace('\'', "''")
+        "$p = Start-Process -FilePath {} -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile -NonInteractive -EncodedCommand {encoded}'; exit $p.ExitCode",
+        ps_quote(&ps.display().to_string())
     );
-    let status = hidden(Command::new("powershell").args(["-NoProfile", "-Command", &outer]))
-        .status()
-        .context("cannot start PowerShell")?;
+    let status =
+        hidden(Command::new(&ps).args(["-NoProfile", "-NonInteractive", "-Command", &outer]))
+            .status()
+            .context("cannot start PowerShell")?;
     if !status.success() {
         bail!(
             "{}",
@@ -63,12 +81,6 @@ fn run_elevated(script: &Path) -> Result<()> {
     Ok(())
 }
 
-fn stage_dir() -> Result<PathBuf> {
-    let d = std::env::temp_dir().join(format!("hqw-{}", crate::plan::random_token(12)));
-    std::fs::create_dir_all(&d)?;
-    Ok(d)
-}
-
 struct Stage(PathBuf);
 
 impl Drop for Stage {
@@ -77,62 +89,123 @@ impl Drop for Stage {
     }
 }
 
+/// Files for the elevated script: written to the user's temp folder, then copied into
+/// a folder only administrators can write and checked against their SHA-256 there.
+struct Staged {
+    _dir: Stage,
+    script: String,
+}
+
+fn stage_files(files: &[(&str, &[u8])]) -> Result<Staged> {
+    let dir = std::env::temp_dir().join(format!("hqw-{}", crate::plan::random_token(12)));
+    std::fs::create_dir_all(&dir)?;
+    let dir = Stage(dir);
+    let mut list = String::new();
+    for (name, data) in files {
+        let path = dir.0.join(name);
+        std::fs::write(&path, data).with_context(|| format!("cannot write {}", path.display()))?;
+        let hash = ring::digest::digest(&ring::digest::SHA256, data);
+        let hex = hash.as_ref().iter().fold(String::new(), |mut s, b| {
+            let _ = write!(s, "{b:02X}");
+            s
+        });
+        let _ = writeln!(list, "$files += ,@({}, '{hex}')", ps_quote(name));
+    }
+    let script = format!(
+        r#"$src = {src}
+$in = "$dir\stage"
+if (Test-Path $in) {{
+  if ((Get-Item $in -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {{ throw 'unexpected link in the installation folder' }}
+  Remove-Item $in -Recurse -Force
+}}
+New-Item -ItemType Directory $in | Out-Null
+icacls $in /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+if ($LASTEXITCODE -ne 0) {{ throw 'icacls failed' }}
+$files = @()
+{list}foreach ($f in $files) {{
+  $t = Join-Path $in $f[0]
+  Copy-Item -LiteralPath (Join-Path $src $f[0]) -Destination $t -Force
+  if ((Get-FileHash -Algorithm SHA256 -LiteralPath $t).Hash -ne $f[1]) {{ throw "file changed before the copy: $($f[0])" }}
+}}
+"#,
+        src = ps_quote(&dir.0.display().to_string())
+    );
+    Ok(Staged { _dir: dir, script })
+}
+
+/// Folders and rights: the user may read everything and change only the data.
+fn prelude(user: &str) -> String {
+    format!(
+        r#"$dir = '{WINDOWS_DIR}'
+$user = {user}
+Stop-ScheduledTask -TaskName '{TASK}' -ErrorAction SilentlyContinue
+Get-Process hq-watchman -ErrorAction SilentlyContinue | Stop-Process -Force
+New-Item -ItemType Directory -Force "$dir\bin", "$dir\data", "$dir\logs" | Out-Null
+icacls $dir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-19:(OI)(CI)RX" "${{user}}:(OI)(CI)RX" | Out-Null
+if ($LASTEXITCODE -ne 0) {{ throw 'icacls failed' }}
+icacls "$dir\data" /grant:r "*S-1-5-19:(OI)(CI)M" "${{user}}:(OI)(CI)M" | Out-Null
+if ($LASTEXITCODE -ne 0) {{ throw 'icacls failed' }}
+icacls "$dir\logs" /grant:r "*S-1-5-19:(OI)(CI)M" | Out-Null
+if ($LASTEXITCODE -ne 0) {{ throw 'icacls failed' }}
+"#,
+        user = ps_quote(user)
+    )
+}
+
 fn user_name() -> String {
     std::env::var("USERNAME").unwrap_or_default()
 }
 
-fn install_script(user: &str) -> String {
+fn install_script(staged: &Staged) -> String {
     format!(
-        r#"$ErrorActionPreference = 'Stop'
-$dir = '{WINDOWS_DIR}'
-$stage = $PSScriptRoot
-Stop-ScheduledTask -TaskName '{TASK}' -ErrorAction SilentlyContinue
-Get-Process hq-watchman -ErrorAction SilentlyContinue | Stop-Process -Force
-New-Item -ItemType Directory -Force "$dir\bin", "$dir\data", "$dir\logs" | Out-Null
-if (Test-Path "$stage\hq-watchman.exe") {{
-  if (Test-Path "$dir\bin\hq-watchman.exe") {{ Copy-Item "$dir\bin\hq-watchman.exe" "$dir\bin\hq-watchman.prev.exe" -Force }}
-  Copy-Item "$stage\hq-watchman.exe" "$dir\bin\hq-watchman.exe" -Force
+        r#"{prelude}{stage}$made = $false
+try {{
+  if (Test-Path "$in\hq-watchman.exe") {{
+    Remove-Item "$dir\bin\hq-watchman.prev.exe" -Force -ErrorAction SilentlyContinue
+    if (Test-Path "$dir\bin\hq-watchman.exe") {{ Copy-Item "$dir\bin\hq-watchman.exe" "$dir\bin\hq-watchman.prev.exe" -Force; $made = $true }}
+    Copy-Item "$in\hq-watchman.exe" "$dir\bin\hq-watchman.exe" -Force
+  }}
+  if (Test-Path "$in\config.toml") {{ Copy-Item "$in\config.toml", "$in\secrets.env" $dir -Force }}
+  if (Test-Path "$in\settings.json") {{
+    Get-Content -Raw "$in\settings.json" | & "$dir\bin\hq-watchman.exe" settings set --config "$dir\config.toml"
+    if ($LASTEXITCODE -ne 0) {{ throw 'settings were not saved' }}
+  }}
+  $arg = 'run --config "' + $dir + '\config.toml" --env-file "' + $dir + '\secrets.env" --log-file "' + $dir + '\logs\hq-watchman.log"'
+  $action = New-ScheduledTaskAction -Execute "$dir\bin\hq-watchman.exe" -Argument $arg -WorkingDirectory "$dir\data"
+  $trigger = New-ScheduledTaskTrigger -AtStartup
+  $principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\LOCAL SERVICE' -LogonType ServiceAccount
+  $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
+  Register-ScheduledTask -TaskName '{TASK}' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+  Start-ScheduledTask -TaskName '{TASK}'
+}} catch {{
+  if ($made) {{
+    Copy-Item "$dir\bin\hq-watchman.prev.exe" "$dir\bin\hq-watchman.exe" -Force
+    Start-ScheduledTask -TaskName '{TASK}' -ErrorAction SilentlyContinue
+  }}
+  throw
+}} finally {{
+  Remove-Item $in -Recurse -Force -ErrorAction SilentlyContinue
 }}
-if (Test-Path "$stage\config.toml") {{ Copy-Item "$stage\config.toml", "$stage\secrets.env" $dir -Force }}
-icacls $dir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-19:(OI)(CI)RX" "{user}:(OI)(CI)M" | Out-Null
-icacls "$dir\data" /grant "*S-1-5-19:(OI)(CI)M" | Out-Null
-icacls "$dir\logs" /grant "*S-1-5-19:(OI)(CI)M" | Out-Null
-if (Test-Path "$stage\settings.json") {{
-  Get-Content -Raw "$stage\settings.json" | & "$dir\bin\hq-watchman.exe" settings set --config "$dir\config.toml"
-  if ($LASTEXITCODE -ne 0) {{ exit 3 }}
-}}
-$arg = 'run --config "' + $dir + '\config.toml" --env-file "' + $dir + '\secrets.env" --log-file "' + $dir + '\logs\hq-watchman.log"'
-$action = New-ScheduledTaskAction -Execute "$dir\bin\hq-watchman.exe" -Argument $arg -WorkingDirectory "$dir\data"
-$trigger = New-ScheduledTaskTrigger -AtStartup
-$principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\LOCAL SERVICE' -LogonType ServiceAccount
-$settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
-Register-ScheduledTask -TaskName '{TASK}' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-Start-ScheduledTask -TaskName '{TASK}'
-"#
+"#,
+        prelude = prelude(&user_name()),
+        stage = staged.script
     )
 }
 
-fn write_private(path: &Path, data: &[u8]) -> Result<()> {
-    std::fs::write(path, data).with_context(|| format!("cannot write {}", path.display()))
-}
-
-/// Puts the given files in place and (re)starts the task.
+/// Puts the given files in place and (re)starts the task. A failed program swap is undone by the script.
 fn apply(exe_bytes: Option<&[u8]>, plan: Option<&Plan>) -> Result<()> {
-    let stage = Stage(stage_dir()?);
+    let mut files: Vec<(&str, zeroize::Zeroizing<Vec<u8>>)> = Vec::new();
     if let Some(b) = exe_bytes {
-        write_private(&stage.0.join("hq-watchman.exe"), b)?;
+        files.push(("hq-watchman.exe", b.to_vec().into()));
     }
     if let Some(p) = plan {
-        write_private(&stage.0.join("config.toml"), p.config_toml().as_bytes())?;
-        write_private(&stage.0.join("secrets.env"), p.secrets_env().as_bytes())?;
-        write_private(
-            &stage.0.join("settings.json"),
-            &serde_json::to_vec(&p.settings())?,
-        )?;
+        files.push(("config.toml", p.config_toml().into_bytes().into()));
+        files.push(("secrets.env", p.secrets_env().as_bytes().to_vec().into()));
+        files.push(("settings.json", serde_json::to_vec(&p.settings())?.into()));
     }
-    let script = stage.0.join("install.ps1");
-    write_private(&script, install_script(&user_name()).as_bytes())?;
-    run_elevated(&script)
+    let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, d)| (*n, d.as_slice())).collect();
+    let staged = stage_files(&refs)?;
+    run_elevated(&install_script(&staged))
 }
 
 pub async fn install(plan: &Plan, bundle: &Bundle, log: &Log) -> Result<()> {
@@ -261,52 +334,86 @@ pub fn version() -> String {
         .unwrap_or_default()
 }
 
-fn simple_elevated(body: &str) -> Result<()> {
-    let stage = Stage(stage_dir()?);
-    let script = stage.0.join("task.ps1");
-    write_private(
-        &script,
-        format!("$ErrorActionPreference = 'Stop'\n{body}\n").as_bytes(),
-    )?;
-    run_elevated(&script)
-}
+const STOP: &str = "Stop-ScheduledTask -TaskName 'HQ Watchman' -ErrorAction SilentlyContinue\nGet-Process hq-watchman -ErrorAction SilentlyContinue | Stop-Process -Force";
 
 pub fn restart() -> Result<()> {
-    simple_elevated(&format!(
-        "Stop-ScheduledTask -TaskName '{TASK}' -ErrorAction SilentlyContinue\nGet-Process hq-watchman -ErrorAction SilentlyContinue | Stop-Process -Force\nStart-ScheduledTask -TaskName '{TASK}'"
-    ))
+    run_elevated(&format!("{STOP}\nStart-ScheduledTask -TaskName '{TASK}'"))
 }
 
-pub fn restore(db: &[u8]) -> Result<()> {
-    if !db.starts_with(b"SQLite format 3") {
-        bail!(
-            "{}",
-            tr!(
-                "это не файл базы SQLite",
-                "this is not an SQLite database file"
-            )
-        );
-    }
-    let stage = Stage(stage_dir()?);
-    write_private(&stage.0.join("restore.db"), db)?;
-    let script = stage.0.join("task.ps1");
-    write_private(
-        &script,
-        format!(
-            "$ErrorActionPreference = 'Stop'\nStop-ScheduledTask -TaskName '{TASK}' -ErrorAction SilentlyContinue\nGet-Process hq-watchman -ErrorAction SilentlyContinue | Stop-Process -Force\nRemove-Item '{WINDOWS_DIR}\\data\\hq-watchman.db-wal', '{WINDOWS_DIR}\\data\\hq-watchman.db-shm' -ErrorAction SilentlyContinue\nCopy-Item \"$PSScriptRoot\\restore.db\" '{WINDOWS_DIR}\\data\\hq-watchman.db' -Force\nStart-ScheduledTask -TaskName '{TASK}'\n"
+const DB_FILES: &str = "'hq-watchman.db', 'hq-watchman.db-wal', 'hq-watchman.db-shm'";
+
+/// Replaces the database with a checked backup; the old one is kept and comes back if the bot does not start.
+pub async fn restore(db: Vec<u8>, log: &Log) -> Result<()> {
+    crate::deploy::check_db(&db).await?;
+    let keep = format!(
+        "before-restore-{}",
+        jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S")
+    );
+    let k = keep.clone();
+    tokio::task::spawn_blocking(move || {
+        let staged = stage_files(&[("restore.db", &db)])?;
+        run_elevated(&format!(
+            r#"{prelude}{stage}try {{
+  $d = "$dir\data"
+  $keep = "$d\{k}"
+  New-Item -ItemType Directory $keep | Out-Null
+  foreach ($n in @({DB_FILES})) {{ if (Test-Path "$d\$n") {{ Move-Item "$d\$n" $keep -Force }} }}
+  Copy-Item "$in\restore.db" "$d\hq-watchman.db" -Force
+}} finally {{
+  Remove-Item $in -Recurse -Force -ErrorAction SilentlyContinue
+  Start-ScheduledTask -TaskName '{TASK}'
+}}
+"#,
+            prelude = prelude(&user_name()),
+            stage = staged.script
+        ))
+    })
+    .await??;
+    log(format!(
+        "  {} {keep}",
+        tr!(
+            "прежняя база сохранена в папке data:",
+            "the previous database is kept in the data folder:"
         )
-        .as_bytes(),
-    )?;
-    run_elevated(&script)
+    ));
+    if let Err(e) = wait_healthy(log).await {
+        log(format!(
+            "! {}",
+            tr!(
+                "Бот не запустился, возвращаю прежнюю базу (Windows ещё раз спросит разрешение)",
+                "The bot did not start, putting the previous database back (Windows asks for permission again)"
+            )
+        ));
+        tokio::task::spawn_blocking(move || {
+            run_elevated(&format!(
+                r#"{STOP}
+$d = '{WINDOWS_DIR}\data'
+$keep = "$d\{keep}"
+if (-not (Test-Path $keep)) {{ throw 'the saved database is missing' }}
+foreach ($n in @({DB_FILES})) {{
+  Remove-Item "$d\$n" -Force -ErrorAction SilentlyContinue
+  if (Test-Path "$keep\$n") {{ Move-Item "$keep\$n" $d -Force }}
+}}
+Remove-Item $keep -Force -ErrorAction SilentlyContinue
+Start-ScheduledTask -TaskName '{TASK}'
+"#
+            ))
+        })
+        .await??;
+        return Err(e);
+    }
+    Ok(())
 }
 
 pub fn uninstall(keep_data: bool) -> Result<()> {
     let rm = if keep_data {
-        format!("Remove-Item '{WINDOWS_DIR}\\bin', '{WINDOWS_DIR}\\secrets.env' -Recurse -Force -ErrorAction SilentlyContinue")
+        format!(
+            r"Remove-Item '{WINDOWS_DIR}\bin', '{WINDOWS_DIR}\secrets.env' -Recurse -Force -ErrorAction SilentlyContinue"
+        )
     } else {
         format!("Remove-Item '{WINDOWS_DIR}' -Recurse -Force -ErrorAction SilentlyContinue")
     };
-    simple_elevated(&format!(
-        "Stop-ScheduledTask -TaskName '{TASK}' -ErrorAction SilentlyContinue\nGet-Process hq-watchman -ErrorAction SilentlyContinue | Stop-Process -Force\nUnregister-ScheduledTask -TaskName '{TASK}' -Confirm:$false -ErrorAction SilentlyContinue\n{rm}"
+    run_elevated(&format!(
+        "{STOP}\nUnregister-ScheduledTask -TaskName '{TASK}' -Confirm:$false -ErrorAction SilentlyContinue\n{rm}"
     ))
 }

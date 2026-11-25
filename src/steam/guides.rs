@@ -181,7 +181,7 @@ pub struct GuidesPoller {
 }
 
 impl GuidesPoller {
-    async fn list_api(&self, steam: &SteamHttp) -> Result<Vec<ListedGuide>, SteamError> {
+    async fn list_api(&self, steam: &SteamHttp) -> Result<(Vec<ListedGuide>, bool), SteamError> {
         let mut out = Vec::new();
         for page in 1..=20u32 {
             let resp: UserFiles = steam
@@ -216,13 +216,13 @@ impl GuidesPoller {
                 });
             }
             if count == 0 || out.len() >= resp.response.total {
-                return Ok(out);
+                return Ok((out, true));
             }
         }
-        Ok(out)
+        Ok((out, false))
     }
 
-    async fn list_html(&self, steam: &SteamHttp) -> Result<Vec<ListedGuide>, ReadError> {
+    async fn list_html(&self, steam: &SteamHttp) -> Result<(Vec<ListedGuide>, bool), ReadError> {
         let mut out = Vec::new();
         for page in 1..=50u32 {
             let url = format!(
@@ -242,10 +242,10 @@ impl GuidesPoller {
                 })
             }));
             if n == 0 || total.is_none_or(|t| out.len() >= t) {
-                return Ok(out);
+                return Ok((out, true));
             }
         }
-        Ok(out)
+        Ok((out, false))
     }
 
     async fn read_comments(
@@ -338,9 +338,16 @@ impl GuidesPoller {
         let first_run = db.meta_get("guides_baseline").await?.is_none();
         let stored: BTreeMap<i64, GuideRow> =
             db.guides().await?.into_iter().map(|g| (g.id, g)).collect();
+        let (listed, complete) = listed;
+        if !complete {
+            tracing::warn!(
+                listed = listed.len(),
+                "guide list is longer than the page limit, missing guides are not counted"
+            );
+        }
         let listed_ids: BTreeSet<i64> = listed.iter().map(|g| g.id).collect();
         for (id, g) in &stored {
-            if listed_ids.contains(id) {
+            if listed_ids.contains(id) || !complete {
                 continue;
             }
             let mut g = g.clone();
@@ -473,7 +480,11 @@ impl GuidesPoller {
         Ok(())
     }
 
-    async fn list_api_or_html(&self, health: &Health) -> Result<Vec<ListedGuide>, ReadError> {
+    /// Guides of the profile and whether the list is complete.
+    async fn list_api_or_html(
+        &self,
+        health: &Health,
+    ) -> Result<(Vec<ListedGuide>, bool), ReadError> {
         let steam = &self.steam;
         if !steam.has_key() {
             return self.list_html(steam).await;

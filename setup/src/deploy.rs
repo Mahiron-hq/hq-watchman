@@ -326,7 +326,20 @@ async fn upload_asset(s: &Session, log: &Log, bundle: &Bundle, name: &str, to: &
         ),
         f64::from(u32::try_from(data.len()).unwrap_or(u32::MAX)) / 1_048_576.0
     ));
-    s.put_file(to, "600", &data).await
+    put_staged(s, to, "600", &data).await
+}
+
+/// Root-only folder for files on their way into place.
+const STAGE: &str = "/var/lib/hq-watchman-setup";
+
+async fn put_staged(s: &Session, path: &str, mode: &str, data: &[u8]) -> Result<()> {
+    let out = s
+        .root_script(&format!("install -d -m 700 -o root -g root {STAGE}"), None)
+        .await?;
+    if !out.ok() {
+        bail!("{}", out.reason());
+    }
+    s.put_file(path, mode, data).await
 }
 
 /// Full Docker installation; data of an earlier installation is kept.
@@ -353,14 +366,14 @@ pub async fn install_docker(
         log,
         bundle,
         &release::docker_asset(v, &info.arch),
-        "/tmp/hqw-image.tar.gz",
+        "/var/lib/hq-watchman-setup/image.tar.gz",
     )
     .await?;
     step(
         s,
         log,
         tr!("Загрузка образа в Docker", "Loading the image into Docker"),
-        "docker load -i /tmp/hqw-image.tar.gz\nrm -f /tmp/hqw-image.tar.gz",
+        "docker load -i /var/lib/hq-watchman-setup/image.tar.gz\nrm -f /var/lib/hq-watchman-setup/image.tar.gz",
     )
     .await?;
     let webhook = plan.github_webhook();
@@ -428,7 +441,7 @@ pub async fn install_systemd(
         log,
         bundle,
         &release::linux_asset(v, &info.arch),
-        "/tmp/hqw-bin.tar.gz",
+        "/var/lib/hq-watchman-setup/bin.tar.gz",
     )
     .await?;
     step(
@@ -436,11 +449,11 @@ pub async fn install_systemd(
         log,
         tr!("Установка программы и пользователя", "Installing the program and its user"),
         &format!(
-            r"rm -rf /tmp/hqw-bin && mkdir -p /tmp/hqw-bin
-tar -xzf /tmp/hqw-bin.tar.gz -C /tmp/hqw-bin
+            r"rm -rf /var/lib/hq-watchman-setup/bin && mkdir -p /var/lib/hq-watchman-setup/bin
+tar -xzf /var/lib/hq-watchman-setup/bin.tar.gz -C /var/lib/hq-watchman-setup/bin
 test -f {BIN} && cp -f {BIN} {BIN}.prev || true
-install -m 755 /tmp/hqw-bin/hq-watchman {BIN}
-rm -rf /tmp/hqw-bin /tmp/hqw-bin.tar.gz
+install -m 755 /var/lib/hq-watchman-setup/bin/hq-watchman {BIN}
+rm -rf /var/lib/hq-watchman-setup/bin /var/lib/hq-watchman-setup/bin.tar.gz
 id hq-watchman >/dev/null 2>&1 || useradd --system --home-dir {DATA} --no-create-home --shell /usr/sbin/nologin hq-watchman
 install -d -m 750 -o root -g hq-watchman {SYSTEMD_ETC}
 install -d -m 700 -o hq-watchman -g hq-watchman {DATA}
@@ -454,15 +467,20 @@ install -d -m 700 -o hq-watchman -g hq-watchman {DATA}
     s.put_file(l.secrets, "640", plan.secrets_env().as_bytes())
         .await?;
     let settings = serde_json::to_vec(&plan.settings())?;
-    s.put_file("/tmp/hqw-settings.json", "644", &settings)
-        .await?;
+    put_staged(
+        s,
+        "/var/lib/hq-watchman-setup/settings.json",
+        "644",
+        &settings,
+    )
+    .await?;
     s.put_file(UNIT, "644", unit().as_bytes()).await?;
     step(
         s,
         log,
         tr!("Начальные настройки", "Initial settings"),
         &format!(
-            "chgrp hq-watchman {c} {e}\nsystemctl stop hq-watchman 2>/dev/null || true\nrunuser -u hq-watchman -- {BIN} settings set --config {c} < /tmp/hqw-settings.json\nrm -f /tmp/hqw-settings.json",
+            "chgrp hq-watchman {c} {e}\nsystemctl stop hq-watchman 2>/dev/null || true\nrunuser -u hq-watchman -- {BIN} settings set --config {c} < /var/lib/hq-watchman-setup/settings.json\nrm -f /var/lib/hq-watchman-setup/settings.json",
             c = l.config,
             e = l.secrets
         ),
@@ -620,11 +638,11 @@ pub async fn settings_set(
 ) -> Result<()> {
     settings.validate()?;
     let json = serde_json::to_vec(settings)?;
-    s.put_file("/tmp/hqw-settings.json", "644", &json).await?;
+    put_staged(s, "/var/lib/hq-watchman-setup/settings.json", "644", &json).await?;
     let out = s
         .root_script(
             &format!(
-                "{} < /tmp/hqw-settings.json; rc=$?; rm -f /tmp/hqw-settings.json; exit $rc",
+                "{} < /var/lib/hq-watchman-setup/settings.json; rc=$?; rm -f /var/lib/hq-watchman-setup/settings.json; exit $rc",
                 bot_cmd(t, "settings set")
             ),
             None,
@@ -690,7 +708,7 @@ pub async fn backup(s: &Session, t: Target) -> Result<Vec<u8>> {
     }
     let read = match t {
         Target::Docker => format!(
-            "docker cp hq-watchman:{file} /tmp/hqw-backup.db >/dev/null && cat /tmp/hqw-backup.db; rm -f /tmp/hqw-backup.db"
+            "install -d -m 700 -o root -g root {STAGE} && docker cp hq-watchman:{file} /var/lib/hq-watchman-setup/backup.db >/dev/null && cat /var/lib/hq-watchman-setup/backup.db; rm -f /var/lib/hq-watchman-setup/backup.db"
         ),
         _ => format!("cat {file}"),
     };
@@ -701,8 +719,8 @@ pub async fn backup(s: &Session, t: Target) -> Result<Vec<u8>> {
     Ok(out.raw)
 }
 
-/// Replaces the database with a backup; the bot is stopped meanwhile.
-pub async fn restore(s: &Session, t: Target, db: &[u8], log: &Log) -> Result<()> {
+/// Checks a database file on this computer before it is sent anywhere.
+pub async fn check_db(db: &[u8]) -> Result<()> {
     if !db.starts_with(b"SQLite format 3") {
         bail!(
             "{}",
@@ -712,15 +730,52 @@ pub async fn restore(s: &Session, t: Target, db: &[u8], log: &Log) -> Result<()>
             )
         );
     }
-    s.put_file("/tmp/hqw-restore.db", "600", db).await?;
-    let script = match t {
-        Target::Docker => format!(
-            "cd {DOCKER_DIR}\ndocker compose stop hq-watchman\nvol=$(docker volume inspect hq-watchman_data -f '{{{{.Mountpoint}}}}')\nrm -f \"$vol\"/hq-watchman.db-wal \"$vol\"/hq-watchman.db-shm\ninstall -m 600 -o 65532 -g 65532 /tmp/hqw-restore.db \"$vol\"/hq-watchman.db\nrm -f /tmp/hqw-restore.db\ndocker compose up -d"
+    let dir = std::env::temp_dir().join(format!("hqw-{}", crate::plan::random_token(12)));
+    std::fs::create_dir_all(&dir)?;
+    let file = dir.join("check.db");
+    let r = match std::fs::write(&file, db) {
+        Ok(()) => hq_watchman::storage::check_backup_file(&file).await,
+        Err(e) => Err(e.into()),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    r.map_err(|e| {
+        anyhow!(
+            "{}: {e:#}",
+            tr!(
+                "файл не подходит для восстановления",
+                "the file cannot be restored"
+            )
+        )
+    })
+}
+
+/// Replaces the database with a backup; the bot is stopped meanwhile.
+/// The old database is kept next to it and comes back if the bot does not start.
+pub async fn restore(s: &Session, t: Target, db: &[u8], log: &Log) -> Result<()> {
+    check_db(db).await?;
+    put_staged(s, "/var/lib/hq-watchman-setup/restore.db", "600", db).await?;
+    let keep = format!(
+        "before-restore-{}",
+        jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S")
+    );
+    let (stop, start, dir, owner) = match t {
+        Target::Docker => (
+            format!("cd {DOCKER_DIR} && docker compose stop hq-watchman"),
+            format!("cd {DOCKER_DIR} && docker compose up -d"),
+            "$(docker volume inspect hq-watchman_data -f '{{.Mountpoint}}')".to_owned(),
+            "65532:65532",
         ),
-        _ => format!(
-            "systemctl stop hq-watchman\nrm -f {DATA}/hq-watchman.db-wal {DATA}/hq-watchman.db-shm\ninstall -m 600 -o hq-watchman -g hq-watchman /tmp/hqw-restore.db {DATA}/hq-watchman.db\nrm -f /tmp/hqw-restore.db\nsystemctl start hq-watchman"
+        _ => (
+            "systemctl stop hq-watchman".to_owned(),
+            "systemctl start hq-watchman".to_owned(),
+            DATA.to_owned(),
+            "hq-watchman:hq-watchman",
         ),
     };
+    let files = "hq-watchman.db hq-watchman.db-wal hq-watchman.db-shm";
+    let script = format!(
+        "{stop}\nd={dir}\ntest -d \"$d\"\ninstall -d -m 700 \"$d/{keep}\"\nchown {owner} \"$d/{keep}\"\nfor f in {files}; do if [ -f \"$d/$f\" ]; then mv -f \"$d/$f\" \"$d/{keep}/\"; fi; done\ninstall -m 600 /var/lib/hq-watchman-setup/restore.db \"$d/hq-watchman.db\"\nchown {owner} \"$d/hq-watchman.db\"\nrm -f /var/lib/hq-watchman-setup/restore.db\n{start}"
+    );
     step(
         s,
         log,
@@ -728,7 +783,28 @@ pub async fn restore(s: &Session, t: Target, db: &[u8], log: &Log) -> Result<()>
         &script,
     )
     .await?;
-    wait_healthy(s, log, t).await
+    log(format!(
+        "  {} {keep}",
+        tr!(
+            "прежняя база сохранена в папке данных:",
+            "the previous database is kept in the data folder:"
+        )
+    ));
+    if let Err(e) = wait_healthy(s, log, t).await {
+        log(format!(
+            "! {}",
+            tr!(
+                "Бот не запустился, возвращаю прежнюю базу",
+                "The bot did not start, putting the previous database back"
+            )
+        ));
+        let back = format!(
+            "{stop}\nd={dir}\ntest -d \"$d/{keep}\"\nfor f in {files}; do rm -f \"$d/$f\"; if [ -f \"$d/{keep}/$f\" ]; then mv -f \"$d/{keep}/$f\" \"$d/\"; fi; done\nrmdir \"$d/{keep}\" 2>/dev/null || true\n{start}"
+        );
+        step(s, log, tr!("Откат", "Rollback"), &back).await?;
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Installs a new version and goes back to the old one if the bot does not get healthy.
@@ -747,19 +823,19 @@ pub async fn update(
             log,
             bundle,
             &release::docker_asset(v, &info.arch),
-            "/tmp/hqw-image.tar.gz",
+            "/var/lib/hq-watchman-setup/image.tar.gz",
         )
         .await?;
-        step(
+        let changed = step(
             s,
             log,
             tr!("Новый образ", "New image"),
             &format!(
-                "docker load -i /tmp/hqw-image.tar.gz\nrm -f /tmp/hqw-image.tar.gz\ncd {DOCKER_DIR}\ncp -f compose.yaml compose.yaml.prev\nsed -i -E 's#image: hq-watchman:[0-9.]+#image: hq-watchman:{v}#' compose.yaml\ndocker compose up -d"
+                "rm -f {DOCKER_DIR}/compose.yaml.prev\ndocker load -i /var/lib/hq-watchman-setup/image.tar.gz\nrm -f /var/lib/hq-watchman-setup/image.tar.gz\ncd {DOCKER_DIR}\ncp -f compose.yaml compose.yaml.prev\nsed -i -E 's#image: hq-watchman:[0-9.]+#image: hq-watchman:{v}#' compose.yaml\ndocker compose up -d"
             ),
         )
-        .await?;
-        if let Err(e) = wait_healthy(s, log, t).await {
+        .await;
+        if let Err(e) = changed.and(wait_healthy(s, log, t).await) {
             log(format!(
                 "! {}",
                 tr!(
@@ -772,7 +848,7 @@ pub async fn update(
                 log,
                 tr!("Откат", "Rollback"),
                 &format!(
-                    "cd {DOCKER_DIR}\nmv -f compose.yaml.prev compose.yaml\ndocker compose up -d"
+                    "cd {DOCKER_DIR}\nif [ -f compose.yaml.prev ]; then mv -f compose.yaml.prev compose.yaml; fi\ndocker compose up -d"
                 ),
             )
             .await?;
@@ -784,19 +860,19 @@ pub async fn update(
             log,
             bundle,
             &release::linux_asset(v, &info.arch),
-            "/tmp/hqw-bin.tar.gz",
+            "/var/lib/hq-watchman-setup/bin.tar.gz",
         )
         .await?;
-        step(
+        let changed = step(
             s,
             log,
             tr!("Новая версия программы", "New program version"),
             &format!(
-                "rm -rf /tmp/hqw-bin && mkdir -p /tmp/hqw-bin\ntar -xzf /tmp/hqw-bin.tar.gz -C /tmp/hqw-bin\ncp -f {BIN} {BIN}.prev\ninstall -m 755 /tmp/hqw-bin/hq-watchman {BIN}\nrm -rf /tmp/hqw-bin /tmp/hqw-bin.tar.gz\nsystemctl restart hq-watchman"
+                "rm -f {BIN}.prev\nrm -rf /var/lib/hq-watchman-setup/bin && mkdir -p /var/lib/hq-watchman-setup/bin\ntar -xzf /var/lib/hq-watchman-setup/bin.tar.gz -C /var/lib/hq-watchman-setup/bin\ncp -f {BIN} {BIN}.prev\ninstall -m 755 /var/lib/hq-watchman-setup/bin/hq-watchman {BIN}\nrm -rf /var/lib/hq-watchman-setup/bin /var/lib/hq-watchman-setup/bin.tar.gz\nsystemctl restart hq-watchman"
             ),
         )
-        .await?;
-        if let Err(e) = wait_healthy(s, log, t).await {
+        .await;
+        if let Err(e) = changed.and(wait_healthy(s, log, t).await) {
             log(format!(
                 "! {}",
                 tr!(
@@ -808,7 +884,7 @@ pub async fn update(
                 s,
                 log,
                 tr!("Откат", "Rollback"),
-                &format!("install -m 755 {BIN}.prev {BIN}\nsystemctl restart hq-watchman"),
+                &format!("if [ -f {BIN}.prev ]; then install -m 755 {BIN}.prev {BIN}; fi\nsystemctl restart hq-watchman"),
             )
             .await?;
             return Err(e);
@@ -839,7 +915,16 @@ pub async fn uninstall(s: &Session, t: Target, keep_data: bool, log: &Log) -> Re
             }
         ),
     };
-    step(s, log, tr!("Удаление", "Removing"), &script).await?;
+    step(
+        s,
+        log,
+        tr!("Удаление", "Removing"),
+        &format!(
+            "{script}
+rm -rf {STAGE}"
+        ),
+    )
+    .await?;
     Ok(())
 }
 

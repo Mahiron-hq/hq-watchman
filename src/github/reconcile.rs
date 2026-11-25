@@ -46,6 +46,9 @@ pub async fn refresh_installations(app: &App) -> Result<(), GhError> {
 
 async fn sync_repos(app: &App) -> Result<(), GhError> {
     let installations = app.db.installations().await?;
+    // Read before the API so a repository a webhook adds meanwhile is not taken as removed.
+    let before: BTreeSet<i64> = app.db.repos().await?.into_iter().map(|r| r.id).collect();
+    let mut complete = true;
     let mut fresh: BTreeMap<i64, RepoRow> = BTreeMap::new();
     for (inst, _, suspended) in &installations {
         if *suspended {
@@ -54,7 +57,15 @@ async fn sync_repos(app: &App) -> Result<(), GhError> {
         let Ok(id) = u64::try_from(*inst) else {
             continue;
         };
-        for r in api(app)?.repositories(id).await? {
+        let (list, whole) = api(app)?.repositories(id).await?;
+        if !whole {
+            tracing::warn!(
+                installation = id,
+                "repository list longer than the page limit, removals skipped"
+            );
+            complete = false;
+        }
+        for r in list {
             let Ok(rid) = i64::try_from(r.id) else {
                 continue;
             };
@@ -107,7 +118,7 @@ async fn sync_repos(app: &App) -> Result<(), GhError> {
     }
     let removed: Vec<i64> = stored
         .keys()
-        .filter(|id| !fresh.contains_key(id))
+        .filter(|id| complete && before.contains(id) && !fresh.contains_key(id))
         .copied()
         .collect();
     for id in &removed {
@@ -144,9 +155,14 @@ async fn sync_repos(app: &App) -> Result<(), GhError> {
 
 /// Asks GitHub to redeliver deliveries that never reached the bot. Returns how many.
 async fn redeliver_failed(app: &App) -> Result<usize, GhError> {
-    let deliveries = api(app)?
+    let (deliveries, complete) = api(app)?
         .deliveries(crate::now() - DELIVERY_HISTORY)
         .await?;
+    if !complete {
+        tracing::warn!(
+            "GitHub delivery log longer than the page limit, only the newest part checked"
+        );
+    }
     let mut by_guid: BTreeMap<String, Vec<&super::Delivery>> = BTreeMap::new();
     for d in &deliveries {
         by_guid.entry(d.guid.clone()).or_default().push(d);

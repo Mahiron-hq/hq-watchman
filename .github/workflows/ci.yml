@@ -7,6 +7,7 @@ on:
   schedule:
     - cron: "17 4 * * *"
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -49,13 +50,18 @@ jobs:
           arguments: --locked
 
   setup-app:
-    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Format, lint, test
         working-directory: setup
+        shell: bash
         run: |
           rustup show active-toolchain
           cargo fmt --check
@@ -75,6 +81,8 @@ jobs:
           manifest-path: setup/Cargo.toml
 
   secrets:
+    # A release tag was already scanned on its branch.
+    if: github.ref_type != 'tag'
     runs-on: ubuntu-24.04
     permissions:
       contents: read

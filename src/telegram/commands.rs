@@ -285,13 +285,20 @@ impl Poller {
                     .await?;
                 Some(target.unwrap_or(View::Main))
             }
-            Some(Action::Repo(page, idx)) => {
+            Some(Action::Repo(page, idx, tag)) => {
                 let repos = self.repo_names().await?;
+                let mut hit = false;
                 self.app
                     .update_settings(|s| {
-                        menu::toggle_repo(s, &repos, page, idx);
+                        hit = menu::toggle_repo(s, &repos, page, idx, tag);
                     })
                     .await?;
+                if !hit {
+                    note = Some(crate::tr!(
+                        "Список репозиториев изменился, нажмите ещё раз",
+                        "The repository list changed, tap again"
+                    ));
+                }
                 Some(View::Repos(page))
             }
             Some(Action::Ask(p)) => {
@@ -1091,6 +1098,7 @@ impl Poller {
     pub async fn run(mut self) -> Result<()> {
         let mut offset = 0i64;
         let mut delay = 1u64;
+        let mut failed: (i64, u32) = (-1, 0);
         loop {
             self.app.health.beat("telegram_poll", 180);
             let updates = tokio::select! {
@@ -1101,11 +1109,29 @@ impl Poller {
                 Ok(list) => {
                     delay = 1;
                     self.app.health.ok("telegram").await;
+                    // A failed update is fetched again; after three failures it is skipped.
                     for u in list {
-                        offset = offset.max(u.update_id + 1);
                         let id = u.update_id;
-                        if let Err(e) = self.handle(u).await {
-                            tracing::error!(update = id, error = %e, "update handling failed");
+                        if id < offset {
+                            continue;
+                        }
+                        match self.handle(u).await {
+                            Ok(()) => offset = id + 1,
+                            Err(e) => {
+                                failed = if failed.0 == id {
+                                    (id, failed.1 + 1)
+                                } else {
+                                    (id, 1)
+                                };
+                                if failed.1 >= 3 {
+                                    tracing::error!(update = id, error = %e, "update handling failed three times, skipped");
+                                    offset = id + 1;
+                                } else {
+                                    tracing::warn!(update = id, error = %e, "update handling failed, will retry");
+                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                    break;
+                                }
+                            }
                         }
                     }
                 }

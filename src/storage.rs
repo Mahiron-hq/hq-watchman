@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{SqliteConnection, SqlitePool};
 
@@ -14,6 +14,8 @@ use crate::event::{Body, Event};
 pub const KIND_EVENT: i64 = 0;
 pub const KIND_SERVICE: i64 = 1;
 pub const KIND_REPLY: i64 = 2;
+/// Unsent files of a long message.
+pub const KIND_PARTS: i64 = 3;
 
 pub const STATUS_PENDING: i64 = 0;
 pub const STATUS_SENT: i64 = 1;
@@ -274,6 +276,49 @@ impl Db {
         Ok(())
     }
 
+    /// Marks rows sent and queues the files still to send, in one transaction.
+    pub async fn mark_sent_with_rest(
+        &self,
+        ids: &[i64],
+        message_id: Option<i64>,
+        key: &str,
+        chat_id: Option<i64>,
+        body: &str,
+    ) -> Result<()> {
+        let now = crate::now();
+        let mut tx = self.pool.begin().await?;
+        for id in ids {
+            sqlx::query!(
+                "UPDATE outbox SET status = 1, sent_at = ?, message_id = ? WHERE id = ?",
+                now,
+                message_id,
+                id
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query!(
+            "INSERT OR IGNORE INTO outbox (dedup_key, kind, source, body, occurred_at, created_at, chat_id) VALUES (?, ?, 'bot', ?, ?, ?, ?)",
+            key,
+            KIND_PARTS,
+            body,
+            now,
+            now,
+            chat_id
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn set_body(&self, id: i64, body: &str) -> Result<()> {
+        sqlx::query!("UPDATE outbox SET body = ? WHERE id = ?", body, id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn mark_retry(&self, ids: &[i64], next_attempt_at: i64) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         for id in ids {
@@ -418,24 +463,7 @@ impl Db {
         events: &[Event],
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        for r in upsert {
-            let p = i64::from(r.private);
-            sqlx::query!(
-                "INSERT INTO repos (id, full_name, private, installation_id) VALUES (?, ?, ?, ?)
-                 ON CONFLICT(id) DO UPDATE SET full_name = excluded.full_name, private = excluded.private, installation_id = excluded.installation_id",
-                r.id,
-                r.full_name,
-                p,
-                r.installation_id
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
-        for id in remove {
-            sqlx::query!("DELETE FROM repos WHERE id = ?", id)
-                .execute(&mut *tx)
-                .await?;
-        }
+        write_repos(&mut tx, upsert, remove).await?;
         for ev in events {
             insert_event(&mut tx, ev, 0).await?;
         }
@@ -445,6 +473,18 @@ impl Db {
 
     /// Records a webhook delivery and its events atomically. Returns false for a repeat.
     pub async fn accept_delivery(&self, guid: &str, events: &[Event]) -> Result<bool> {
+        self.accept_delivery_with_repos(guid, events, &[], &[])
+            .await
+    }
+
+    /// Like `accept_delivery`, and applies the repository list change in the same transaction.
+    pub async fn accept_delivery_with_repos(
+        &self,
+        guid: &str,
+        events: &[Event],
+        upsert: &[RepoRow],
+        remove: &[i64],
+    ) -> Result<bool> {
         let now = crate::now();
         let mut tx = self.pool.begin().await?;
         let inserted = sqlx::query!(
@@ -460,6 +500,7 @@ impl Db {
             for ev in events {
                 insert_event(&mut tx, ev, 0).await?;
             }
+            write_repos(&mut tx, upsert, remove).await?;
         }
         tx.commit().await?;
         Ok(inserted)
@@ -709,15 +750,25 @@ impl Db {
         )
     }
 
+    /// Records seen news and queues events; `baseline` also marks the first read of the app.
     pub async fn save_news(
         &self,
         appid: i64,
         gids: &[String],
         events: &[Event],
         merge_window_secs: i64,
+        baseline: Option<&str>,
     ) -> Result<()> {
         let now = crate::now();
         let mut tx = self.pool.begin().await?;
+        if let Some(key) = baseline {
+            sqlx::query!(
+                "INSERT INTO meta (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                key
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
         for gid in gids {
             sqlx::query!(
                 "INSERT OR IGNORE INTO news_seen (appid, gid, seen_at) VALUES (?, ?, ?)",
@@ -810,9 +861,14 @@ impl Db {
         sqlx::query!("DELETE FROM strangers WHERE last_at < ?", stranger_cutoff)
             .execute(&self.pool)
             .await?;
-        sqlx::query!("DELETE FROM news_seen WHERE seen_at < ?", cutoff)
-            .execute(&self.pool)
-            .await?;
+        // The newest marks stay: those items are still in the feed Steam returns.
+        sqlx::query!(
+            "DELETE FROM news_seen WHERE seen_at < ? AND rowid NOT IN
+               (SELECT n.rowid FROM news_seen n WHERE n.appid = news_seen.appid ORDER BY n.seen_at DESC, n.rowid DESC LIMIT 100)",
+            cutoff
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -879,6 +935,81 @@ fn merge_kind(body: &Body) -> Option<&'static str> {
         Body::GameNews { patch: true, .. } => Some("patch"),
         _ => None,
     }
+}
+
+async fn write_repos(
+    conn: &mut SqliteConnection,
+    upsert: &[RepoRow],
+    remove: &[i64],
+) -> Result<()> {
+    for r in upsert {
+        let p = i64::from(r.private);
+        sqlx::query!(
+            "INSERT INTO repos (id, full_name, private, installation_id) VALUES (?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET full_name = excluded.full_name, private = excluded.private, installation_id = excluded.installation_id",
+            r.id,
+            r.full_name,
+            p,
+            r.installation_id
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+    for id in remove {
+        sqlx::query!("DELETE FROM repos WHERE id = ?", id)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Checks a database file before it replaces the working one: integrity and a schema this version knows.
+pub async fn check_backup_file(path: &Path) -> Result<()> {
+    let opts = SqliteConnectOptions::from_str("sqlite:")
+        .map_err(|e| anyhow!("{e}"))?
+        .filename(path)
+        .read_only(true)
+        .immutable(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .context("cannot open the file as a database")?;
+    let result = check_pool(&pool).await;
+    pool.close().await;
+    result
+}
+
+async fn check_pool(pool: &SqlitePool) -> Result<()> {
+    let integrity: Vec<String> = sqlx::query_scalar("PRAGMA integrity_check")
+        .fetch_all(pool)
+        .await
+        .context("integrity check failed")?;
+    if integrity != ["ok"] {
+        bail!(
+            "the database is damaged: {}",
+            integrity.first().map_or("?", String::as_str)
+        );
+    }
+    let tables: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .fetch_all(pool)
+            .await?;
+    for t in ["_sqlx_migrations", "meta", "outbox"] {
+        if !tables.iter().any(|n| n == t) {
+            bail!("this is not an HQ Watchman database (no table {t})");
+        }
+    }
+    let applied: Vec<i64> = sqlx::query_scalar("SELECT version FROM _sqlx_migrations")
+        .fetch_all(pool)
+        .await?;
+    if let Some(v) = applied
+        .iter()
+        .find(|v| !MIGRATOR.iter().any(|m| m.version == **v))
+    {
+        bail!("the database comes from a newer HQ Watchman version (schema {v}); update the bot first");
+    }
+    Ok(())
 }
 
 /// Queues an event once per recipient chat unless its dedup key is known.
@@ -1103,12 +1234,67 @@ mod tests {
     async fn removed_game_forgets_news_baseline() {
         let db = Db::memory().await.unwrap();
         db.save_game(10, "G", "{}", &[], 0).await.unwrap();
-        db.save_news(10, &["1".to_owned()], &[], 0).await.unwrap();
-        db.meta_set("news_baseline:10", "1").await.unwrap();
+        db.save_news(10, &["1".to_owned()], &[], 0, Some("news_baseline:10"))
+            .await
+            .unwrap();
+        assert!(db.meta_get("news_baseline:10").await.unwrap().is_some());
         db.forget_games_except(&[11]).await.unwrap();
         assert!(db.game_state(10).await.unwrap().is_none());
         assert_eq!(db.news_seen(10).await.unwrap().len(), 0);
         assert!(db.meta_get("news_baseline:10").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delivery_applies_repos_once() {
+        let db = Db::memory().await.unwrap();
+        let repo = RepoRow {
+            id: 7,
+            full_name: "a/b".into(),
+            private: false,
+            installation_id: 1,
+        };
+        assert!(db
+            .accept_delivery_with_repos("g", &[], std::slice::from_ref(&repo), &[])
+            .await
+            .unwrap());
+        assert_eq!(db.repos().await.unwrap().len(), 1);
+        db.apply_repos(&[], &[7], &[]).await.unwrap();
+        assert!(!db
+            .accept_delivery_with_repos("g", &[], &[repo], &[])
+            .await
+            .unwrap());
+        assert!(db.repos().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rest_of_parts_is_queued_with_the_send() {
+        let db = Db::memory().await.unwrap();
+        let id = db
+            .enqueue(&Event::service("e", "t", "x"))
+            .await
+            .unwrap()
+            .unwrap();
+        db.mark_sent_with_rest(&[id], Some(5), "parts:1", None, "{}")
+            .await
+            .unwrap();
+        let due = db.due(crate::now()).await.unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].kind, KIND_PARTS);
+        db.set_body(due[0].id, "{\"x\":1}").await.unwrap();
+        assert_eq!(db.due(crate::now()).await.unwrap()[0].body, "{\"x\":1}");
+    }
+
+    #[tokio::test]
+    async fn cleanup_keeps_recent_news_marks() {
+        let db = Db::memory().await.unwrap();
+        let gids: Vec<String> = (0..120).map(|i| i.to_string()).collect();
+        db.save_news(10, &gids, &[], 0, None).await.unwrap();
+        sqlx::query("UPDATE news_seen SET seen_at = 0")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        db.cleanup(1, 1).await.unwrap();
+        assert_eq!(db.news_seen(10).await.unwrap().len(), 100);
     }
 
     #[tokio::test]
@@ -1137,6 +1323,10 @@ mod tests {
             .collect();
         assert_eq!(left.len(), 2);
         assert!(made.exists());
+        check_backup_file(&made).await.unwrap();
+        let junk = dir.join("junk.db");
+        std::fs::write(&junk, b"SQLite format 3\0 not really").unwrap();
+        assert!(check_backup_file(&junk).await.is_err());
         db.pool.close().await;
         let _ = std::fs::remove_dir_all(&dir);
     }

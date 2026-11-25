@@ -270,7 +270,7 @@ impl Session {
             .parent()
             .map_or_else(|| "/".into(), |p| p.to_string_lossy().replace('\\', "/"));
         let cmd = format!(
-            "install -d -m 755 {d} && umask 077 && cat > {p}.new && chmod {m} {p}.new && mv -f {p}.new {p}",
+            "{{ [ -d {d} ] || install -d -m 755 {d}; }} && umask 077 && cat > {p}.new && chmod {m} {p}.new && mv -f {p}.new {p}",
             d = sh_quote(&dir),
             p = sh_quote(path),
             m = mode

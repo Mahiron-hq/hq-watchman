@@ -35,7 +35,8 @@ pub enum View {
 pub enum Action {
     Show(View),
     Toggle(String),
-    Repo(usize, usize),
+    /// Page, row on the page and a tag of the repository name shown on the button.
+    Repo(usize, usize, u32),
     Ask(Prompt),
     RemoveGame(u32),
     PickGame(u32),
@@ -78,9 +79,10 @@ pub fn parse(data: &str) -> Option<Action> {
         ["m", "c", _] => Action::Show(View::Chat(num(2)?)),
         ["m", "qh"] => Action::Show(View::Quiet),
         ["t", ..] => Action::Toggle(data.get(2..)?.to_owned()),
-        ["r", _, _] => Action::Repo(
+        ["r", _, _, tag] => Action::Repo(
             usize::try_from(num(1)?).ok()?,
             usize::try_from(num(2)?).ok()?,
+            u32::from_str_radix(tag, 16).ok()?,
         ),
         ["ask", "game"] => Action::Ask(Prompt::AddGame),
         ["ask", "qh"] => Action::Ask(Prompt::QuietHours),
@@ -397,7 +399,11 @@ fn repos_view(s: &Settings, repos: &[String], page: usize) -> (String, Keyboard)
             let label: String = name.chars().take(48).collect();
             vec![b(
                 format!("{} {label}", mark(!excluded)),
-                format!("r:{page}:{}", i - page * REPOS_PER_PAGE),
+                format!(
+                    "r:{page}:{}:{:x}",
+                    i - page * REPOS_PER_PAGE,
+                    repo_tag(name)
+                ),
             )]
         })
         .collect();
@@ -416,8 +422,21 @@ fn repos_view(s: &Settings, repos: &[String], page: usize) -> (String, Keyboard)
 }
 
 /// Switches the exclusion of the repository shown at `page`/`idx`.
-pub fn toggle_repo(s: &mut Settings, repos: &[String], page: usize, idx: usize) -> bool {
-    let Some(name) = repos.get(page * REPOS_PER_PAGE + idx) else {
+/// Short tag of a repository name, so an old button cannot switch a different repository.
+fn repo_tag(name: &str) -> u32 {
+    name.to_ascii_lowercase()
+        .bytes()
+        .fold(0x811c_9dc5u32, |h, b| {
+            (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+        })
+}
+
+/// Switches the repository behind a button; false when the list changed since it was shown.
+pub fn toggle_repo(s: &mut Settings, repos: &[String], page: usize, idx: usize, tag: u32) -> bool {
+    let Some(name) = repos
+        .get(page * REPOS_PER_PAGE + idx)
+        .filter(|n| repo_tag(n) == tag)
+    else {
         return false;
     };
     let list = &mut s.github.excluded_repos;
@@ -666,7 +685,8 @@ mod tests {
             assert!(view_data(v).len() <= 64);
         }
         assert_eq!(parse("t:gh.on"), Some(Action::Toggle("gh.on".into())));
-        assert_eq!(parse("r:1:2"), Some(Action::Repo(1, 2)));
+        assert_eq!(parse("r:1:2:a0"), Some(Action::Repo(1, 2, 0xa0)));
+        assert_eq!(parse("r:1:2"), None);
         assert_eq!(parse("leave:-100"), Some(Action::Leave(-100)));
         assert_eq!(parse("bogus"), None);
         assert_eq!(parse("m:g:x"), None);
@@ -720,9 +740,12 @@ mod tests {
                 assert!(parse(data).is_some(), "{data}");
             }
         }
-        assert!(toggle_repo(&mut s, &repos, 1, 0));
+        let tag = repo_tag("o/r8");
+        assert!(toggle_repo(&mut s, &repos, 1, 0, tag));
         assert_eq!(s.github.excluded_repos, vec!["o/r8".to_owned()]);
-        assert!(toggle_repo(&mut s, &repos, 1, 0));
+        assert!(toggle_repo(&mut s, &repos, 1, 0, tag));
+        assert_eq!(s.github.excluded_repos, [] as [std::string::String; 0]);
+        assert!(!toggle_repo(&mut s, &repos, 1, 1, tag));
         assert_eq!(s.github.excluded_repos, [] as [std::string::String; 0]);
     }
 

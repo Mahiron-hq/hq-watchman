@@ -57,6 +57,8 @@ struct Item {
     user: Option<User>,
     #[serde(default)]
     pull_request: Option<IgnoredAny>,
+    #[serde(default)]
+    updated_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -302,9 +304,21 @@ pub fn parse(event: &str, body: &[u8], ctx: &Context<'_>) -> Result<Outcome, Pay
     let _ = repo.private;
 
     let item_event = |kind: GhItemKind, it: &Item, path: &str, reopened: bool| {
+        // Each reopen is its own event, so the key carries its time.
+        let cycle = if reopened {
+            format!(
+                ":{}",
+                it.updated_at
+                    .as_deref()
+                    .filter(|t| t.len() <= 32)
+                    .map_or_else(|| now.to_string(), str::to_owned)
+            )
+        } else {
+            String::new()
+        };
         Event::new(
             Source::Github,
-            format!("gh:{event}:{}:{}:{action}", repo.id, it.number),
+            format!("gh:{event}:{}:{}:{action}{cycle}", repo.id, it.number),
             now,
             Body::GithubItem {
                 kind,
@@ -596,6 +610,27 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn each_reopen_has_its_own_key() {
+        let o = GithubOptions::default();
+        let reopen = |at: &str| {
+            let body = payload(
+                &format!(
+                    r#""action":"reopened","issue":{{"number":3,"title":"Bug","user":{{"id":5,"login":"u"}},"updated_at":"{at}"}}"#
+                ),
+                5,
+                "u",
+                "User",
+            );
+            parse("issues", body.as_bytes(), &ctx(&o)).unwrap().events[0]
+                .dedup_key
+                .clone()
+        };
+        let a = reopen("2026-01-01T10:00:00Z");
+        assert_eq!(a, reopen("2026-01-01T10:00:00Z"));
+        assert_ne!(a, reopen("2026-01-02T10:00:00Z"));
     }
 
     #[test]

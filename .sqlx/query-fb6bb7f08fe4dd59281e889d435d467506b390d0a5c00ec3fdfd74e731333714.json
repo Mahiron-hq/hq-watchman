@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO outbox (dedup_key, kind, source, body, occurred_at, created_at, chat_id) VALUES (?, ?, 'bot', ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "fb6bb7f08fe4dd59281e889d435d467506b390d0a5c00ec3fdfd74e731333714"
+}

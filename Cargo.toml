@@ -1,6 +1,6 @@
 [package]
 name = "hq-watchman"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.99"
 description = "Telegram bot that notifies its owner about GitHub, Steam guide and Steam game events"

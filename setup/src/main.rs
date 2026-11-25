@@ -54,6 +54,8 @@ struct Managed {
 #[derive(Default)]
 struct State {
     session: Option<Arc<Session>>,
+    /// Connection fields the session was opened with.
+    session_key: String,
     info: Option<ServerInfo>,
     github: Option<GithubPlan>,
     github_org: bool,
@@ -168,6 +170,21 @@ impl Ctx {
 
 fn target_of(s: &S) -> Target {
     Target::from_code(&s.get_target()).unwrap_or(Target::Docker)
+}
+
+fn server_key(s: &S) -> String {
+    format!(
+        "{}|{}|{}|{}|{}",
+        s.get_host().trim(),
+        s.get_port().trim(),
+        s.get_user().trim(),
+        s.get_auth_key(),
+        if s.get_auth_key() {
+            s.get_key_path().trim().to_owned()
+        } else {
+            String::new()
+        }
+    )
 }
 
 fn ssh_target(s: &S) -> Result<ssh::Target> {
@@ -779,7 +796,11 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
         cc.rt.spawn(async move {
             if let Some(f) = rfd::AsyncFileDialog::new().pick_file().await {
                 let p = f.path().display().to_string();
-                c.ui(move |ui| ui.global::<S>().set_key_path(p.into()));
+                c.ui(move |ui| {
+                    let s = ui.global::<S>();
+                    s.set_key_path(p.into());
+                    s.invoke_server_changed();
+                });
             }
         });
     });
@@ -832,6 +853,7 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
             Err(e) => return s.set_error(err_text(&e).into()),
         };
         let target = target_of(&s);
+        let key = server_key(&s);
         cc.task(move |c| async move {
             let session = open_session(&c, &t, "server").await?;
             session.check_root().await?;
@@ -872,6 +894,7 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
             {
                 let mut st = lock(&c.st);
                 st.session = Some(Arc::new(session));
+                st.session_key = key;
                 st.info = Some(info);
             }
             c.ui(move |ui| {
@@ -881,6 +904,16 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
             });
             Ok(())
         });
+    });
+
+    let w = ui.as_weak();
+    s.on_server_changed(move || {
+        let Some(ui) = w.upgrade() else { return };
+        let s = ui.global::<S>();
+        if s.get_server_ok() {
+            s.set_server_ok(false);
+            s.set_server_status(SharedString::new());
+        }
     });
 
     let w = ui.as_weak();
@@ -931,13 +964,16 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
         let Some(ui) = w.upgrade() else { return };
         let s = ui.global::<S>();
         let token = s.get_tg_token().trim().to_owned();
+        let code = plan::random_token(16);
+        s.set_tg_code(code.as_str().into());
+        let _ = open::that(format!("https://t.me/{}?start={code}", s.get_tg_bot()));
         let cancel: services::Cancel = Arc::new(AtomicBool::new(false));
         lock(&cc.st).cancel = Arc::clone(&cancel);
         s.set_tg_waiting(true);
         s.set_error(SharedString::new());
         let c = cc.clone();
         cc.rt.spawn(async move {
-            let r = services::telegram_wait_start(&token, &cancel).await;
+            let r = services::telegram_wait_start(&token, &code, &cancel).await;
             if let Ok((id, _)) = &r {
                 let _ = services::telegram_send(
                     &token,
@@ -1188,6 +1224,16 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
             Ok(p) => p,
             Err(e) => return s.set_error(err_text(&e).into()),
         };
+        if plan.target != Target::Windows && lock(&cc.st).session_key != server_key(&s) {
+            s.set_server_ok(false);
+            return s.set_error(
+                tr!(
+                    "Данные сервера изменились после проверки. Вернитесь к шагу «Сервер» и проверьте подключение снова.",
+                    "The server details changed after the test. Go back to the Server step and test the connection again."
+                )
+                .into(),
+            );
+        }
         lock(&cc.st).log.clear();
         s.set_log(SharedString::new());
         s.set_done(false);
@@ -1565,6 +1611,7 @@ fn wire_manage(ui: &MainWindow, c: &Ctx) {
         s.set_target(p.target);
         s.set_auth_key(!p.key_path.is_empty());
         s.set_key_path(p.key_path);
+        s.invoke_server_changed();
     });
 
     let w = ui.as_weak();
@@ -1599,6 +1646,7 @@ fn wire_manage(ui: &MainWindow, c: &Ctx) {
             }
         };
         let w2 = w.clone();
+        let key = server_key(&s);
         cc.task(move |c| async move {
             if let Some(t) = t {
                 let session = open_session(&c, &t, "connect").await?;
@@ -1628,6 +1676,7 @@ fn wire_manage(ui: &MainWindow, c: &Ctx) {
                 });
                 let mut st = lock(&c.st);
                 st.session = Some(Arc::new(session));
+                st.session_key = key;
                 st.info = Some(info);
                 st.managed.target = Some(target);
             } else {
@@ -1910,7 +1959,8 @@ fn wire_manage(ui: &MainWindow, c: &Ctx) {
             };
             match (target, session) {
                 (Some(Target::Windows), _) => {
-                    tokio::task::spawn_blocking(move || local::restore(&data)).await??;
+                    let log: Log = Arc::new(|_| {});
+                    local::restore(data, &log).await?;
                 }
                 (Some(t), Some(s)) => {
                     let log: Log = Arc::new(|_| {});
@@ -2197,8 +2247,7 @@ mod e2e {
         assert!(logs.contains("settings changed outside the bot"), "{logs}");
         let db = tokio::task::spawn_blocking(local::backup).await??;
         assert!(db.starts_with(b"SQLite format 3"));
-        tokio::task::spawn_blocking(move || local::restore(&db)).await??;
-        local::wait_healthy(&log).await?;
+        local::restore(db, &log).await?;
         tokio::task::spawn_blocking(local::restart).await??;
         local::wait_healthy(&log).await?;
         local::update(&bundle, &log).await?;

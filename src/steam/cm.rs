@@ -416,8 +416,15 @@ impl Session {
             info.unknown.extend(resp.unknown_appids);
             for app in resp.apps {
                 let appid = app.appid.ok_or_else(|| anyhow!("app info without appid"))?;
+                if app.missing_token == Some(true) {
+                    tracing::warn!(appid, "PICS answered without the access token, app skipped");
+                    continue;
+                }
                 let buffer = match app.buffer {
-                    Some(b) if !b.is_empty() => b,
+                    Some(b) if !b.is_empty() => {
+                        check_inline(appid, &b, app.sha.as_deref(), app.size)?;
+                        b
+                    }
                     _ => {
                         fetch_http_buffer(
                             http,
@@ -436,11 +443,39 @@ impl Session {
                     change_number: app.change_number.unwrap_or(0),
                     text,
                 });
-                let _ = (app.missing_token, app.size);
             }
         }
         Ok(info)
     }
+}
+
+/// Inline app info must match the size and SHA-1 sent with it; the hash leaves out the closing NUL.
+fn check_inline(appid: u32, buf: &[u8], sha: Option<&[u8]>, size: Option<u32>) -> Result<()> {
+    if size.is_some_and(|s| usize::try_from(s).ok() != Some(buf.len())) {
+        bail!("app {appid}: size mismatch");
+    }
+    if let Some(sha) = sha {
+        let body = buf.strip_suffix(&[0]).unwrap_or(buf);
+        let digest = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, body);
+        if digest.as_ref() != sha {
+            bail!("app {appid}: checksum mismatch");
+        }
+    }
+    Ok(())
+}
+
+/// Hosts Steam may name for app info downloads.
+fn pics_host_allowed(host: &str) -> bool {
+    const SUFFIXES: &[&str] = &[
+        "steamstatic.com",
+        "steampowered.com",
+        "steamcontent.com",
+        "steamserver.net",
+    ];
+    let host = host.to_ascii_lowercase();
+    SUFFIXES
+        .iter()
+        .any(|s| host == *s || host.strip_suffix(s).is_some_and(|rest| rest.ends_with('.')))
 }
 
 async fn fetch_http_buffer(
@@ -457,6 +492,9 @@ async fn fetch_http_buffer(
     {
         bail!("app {appid}: invalid HTTP host");
     }
+    if !pics_host_allowed(host) {
+        bail!("app {appid}: HTTP host is not a Steam host");
+    }
     let hex = sha.iter().fold(String::new(), |mut s, b| {
         let _ = write!(s, "{b:02x}");
         s
@@ -467,8 +505,9 @@ async fn fetch_http_buffer(
     flate2::read::GzDecoder::new(gz.as_ref())
         .take(MAX_UNZIPPED as u64)
         .read_to_end(&mut text)?;
-    let digest = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &text);
-    if digest.as_ref() != sha {
+    let sha1 = |b: &[u8]| ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, b);
+    let stripped = text.strip_suffix(&[0]).unwrap_or(&text);
+    if sha1(&text).as_ref() != sha && sha1(stripped).as_ref() != sha {
         bail!("app {appid}: checksum mismatch");
     }
     Ok(text)
@@ -543,6 +582,29 @@ fn read_u32(data: &[u8], at: usize) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_info_is_checked() {
+        let text = b"\"appinfo\" {}";
+        let mut buf = text.to_vec();
+        buf.push(0);
+        let sha = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, text);
+        let len = u32::try_from(buf.len()).unwrap();
+        assert!(check_inline(1, &buf, Some(sha.as_ref()), Some(len)).is_ok());
+        assert!(check_inline(1, &buf, None, None).is_ok());
+        assert!(check_inline(1, &buf, Some(sha.as_ref()), Some(len + 1)).is_err());
+        assert!(check_inline(1, &buf, Some(&[0u8; 20]), Some(len)).is_err());
+    }
+
+    #[test]
+    fn pics_hosts() {
+        assert!(pics_host_allowed("clientconfig.akamai.steamstatic.com"));
+        assert!(pics_host_allowed("steampowered.com"));
+        assert!(!pics_host_allowed("evilsteamstatic.com"));
+        assert!(!pics_host_allowed("steamstatic.com.evil.net"));
+        assert!(!pics_host_allowed("127.0.0.1"));
+        assert!(!pics_host_allowed("localhost"));
+    }
 
     #[test]
     fn endpoint_validation() {

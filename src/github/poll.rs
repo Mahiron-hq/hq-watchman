@@ -26,7 +26,10 @@ async fn poll_once(app: &Arc<App>) -> Result<usize, GhError> {
         .await?
         .and_then(|v| v.parse::<i64>().ok())
         .map_or(now - HISTORY, |t| (t - OVERLAP).max(now - HISTORY));
-    let mut list = gh.deliveries(since).await?;
+    let (mut list, whole) = gh.deliveries(since).await?;
+    if !whole {
+        tracing::warn!("GitHub delivery log longer than the page limit, the polling mark is kept");
+    }
     list.sort_by_key(|d| d.id);
     let mut newest = since + OVERLAP;
     let mut done = 0usize;
@@ -61,7 +64,9 @@ async fn poll_once(app: &Arc<App>) -> Result<usize, GhError> {
     if complete {
         newest = newest.max(now);
     }
-    app.db.meta_set("poll_since", &newest.to_string()).await?;
+    if whole {
+        app.db.meta_set("poll_since", &newest.to_string()).await?;
+    }
     Ok(done)
 }
 

@@ -219,8 +219,13 @@ pub fn diff(appid: u32, old: &GameState, new: &GameState) -> Vec<Event> {
     out
 }
 
-/// Builds new states for the given apps from PICS.
-async fn fetch_states(steam: &SteamHttp, appids: &[u32]) -> Result<BTreeMap<u32, GameState>> {
+/// Builds new states for the given apps from PICS. A DLC that PICS did not describe
+/// keeps its stored state instead of turning into an empty one.
+async fn fetch_states(
+    steam: &SteamHttp,
+    appids: &[u32],
+    old: &BTreeMap<u32, GameState>,
+) -> Result<BTreeMap<u32, GameState>> {
     let info = super::cm::fetch_product_info(steam.http(), appids).await?;
     let mut parsed = BTreeMap::new();
     for raw in &info.apps {
@@ -243,6 +248,12 @@ async fn fetch_states(steam: &SteamHttp, appids: &[u32]) -> Result<BTreeMap<u32,
         let mut dlcs = BTreeMap::new();
         for id in &app.dlc_ids {
             let own = dlc_info.get(id);
+            if own.is_none() {
+                if let Some(prev) = old.get(&appid).and_then(|o| o.dlcs.get(id)) {
+                    dlcs.insert(*id, prev.clone());
+                    continue;
+                }
+            }
             let mut content: Vec<(String, String)> =
                 app.dlc_depots.get(id).cloned().unwrap_or_default();
             if let Some(d) = own {
@@ -346,7 +357,17 @@ impl GamesPoller {
         }
         let merge = i64::try_from(cfg.games.merge_window_minutes)? * 60;
         let mut baselined = Vec::new();
-        match fetch_states(steam, appids).await {
+        let mut stored = BTreeMap::new();
+        for &appid in appids {
+            if let Some(s) = db
+                .game_state(i64::from(appid))
+                .await?
+                .and_then(|s| serde_json::from_str::<GameState>(&s).ok())
+            {
+                stored.insert(appid, s);
+            }
+        }
+        match fetch_states(steam, appids, &stored).await {
             Ok(states) => {
                 self.pics_failing_since = None;
                 health.ok("pics").await;
@@ -514,11 +535,15 @@ impl GamesPoller {
                 events.push(ev);
             }
             events.sort_by_key(|e| e.occurred_at);
-            if !gids.is_empty() {
-                db.save_news(key, &gids, &events, merge).await?;
-            }
-            if first_time {
-                db.meta_set(&base_key, "1").await?;
+            if !gids.is_empty() || first_time {
+                db.save_news(
+                    key,
+                    &gids,
+                    &events,
+                    merge,
+                    first_time.then_some(base_key.as_str()),
+                )
+                .await?;
             }
         }
         Ok(())

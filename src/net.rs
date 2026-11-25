@@ -137,8 +137,8 @@ impl HttpClient {
     /// For the PICS content host that Steam names at run time.
     pub async fn get_bytes_any_host(&self, url: &str) -> Result<Bytes> {
         let parsed = Url::parse(url).map_err(|_| anyhow!("invalid URL"))?;
-        if parsed.scheme() != "https" {
-            bail!("only https is allowed");
+        if parsed.scheme() != "https" || parsed.port().is_some() || parsed.domain().is_none() {
+            bail!("only https to a host name is allowed");
         }
         Ok(self.send(self.inner.get(parsed), DEFAULT_LIMIT).await?)
     }

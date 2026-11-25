@@ -22,7 +22,7 @@
 | | |
 |---|---|
 | Platform | Bot: Linux x86_64/arm64 (Docker or systemd), Windows x64. Setup app: Windows, macOS, Linux |
-| Version | 0.1.0 |
+| Version | 0.1.1 |
 | License | GPL-3.0-or-later |
 | Languages | Bot messages in Russian, docs in English and Russian |
 
@@ -60,7 +60,7 @@ HQ Watchman is a self-hosted Telegram bot for one person. It sends the owner pri
 
 1. Choose where the bot runs and enter the server address and password (passwords are never saved).
 2. Choose the sources: GitHub, Steam guides, Steam games.
-3. Paste the Telegram bot token and press Start in your bot: the app learns your ID.
+3. Paste the Telegram bot token, press Open the bot and then Start in Telegram: the bot gets a one-time code and the app learns your ID.
 4. For GitHub, press two buttons in the browser: the read-only GitHub App is created and installed automatically.
 5. Add games by name, pick language, time zone and quiet hours.
 6. Press **Install**: the app checks the signature of the release files, sets everything up and checks that the bot works.
@@ -104,7 +104,7 @@ Requires Rust 1.99 (pinned in `rust-toolchain.toml`).
 ```sh
 cargo build --release --locked
 cargo test --locked
-docker build -t hq-watchman:0.1.0 .
+docker build -t hq-watchman:0.1.1 .
 cd setup && cargo build --release --locked
 ```
 
@@ -152,7 +152,7 @@ HQ Watchman – Telegram-бот для одного человека, котор
 
 1. Выберите, где работает бот, и введите адрес сервера и пароль (пароли не сохраняются).
 2. Выберите источники: GitHub, руководства Steam, игры Steam.
-3. Вставьте токен Telegram-бота и нажмите Start в своём боте: программа узнает ваш ID.
+3. Вставьте токен Telegram-бота, нажмите «Открыть бота», а затем Start в Telegram: бот получит одноразовый код, и программа узнает ваш ID.
 4. Для GitHub нажмите две кнопки в браузере: GitHub App только на чтение создаётся и устанавливается само.
 5. Добавьте игры по названию, выберите язык, часовой пояс и тихие часы.
 6. Нажмите **Установить**: программа проверит подпись файлов релиза, всё настроит и проверит работу бота.
@@ -196,7 +196,7 @@ HQ Watchman – Telegram-бот для одного человека, котор
 ```sh
 cargo build --release --locked
 cargo test --locked
-docker build -t hq-watchman:0.1.0 .
+docker build -t hq-watchman:0.1.1 .
 cd setup && cargo build --release --locked
 ```
 

@@ -283,8 +283,10 @@ impl App {
                 )
             }
         };
+        let mut new = new;
         let old = self.cfg();
         let restart = old.restart_only_diff(&new);
+        new.keep_restart_only(&old);
         *self
             .cfg
             .write()
@@ -300,11 +302,15 @@ impl App {
                 s,
                 "{}",
                 crate::trf!(
-                    "\nЭти параметры действуют только после перезапуска: {list}.",
-                    "\nThese settings take effect only after a restart: {list}."
+                    "\nЭти параметры действуют только после перезапуска, до него работают прежние значения: {list}.",
+                    "\nThese settings take effect only after a restart, the old values stay until then: {list}."
                 )
             );
         }
+        s.push_str(crate::tr!(
+            "\nСекреты из переменных окружения (.env) перечитываются только при перезапуске.",
+            "\nSecrets from environment variables (.env) are read again only on restart."
+        ));
         s
     }
 
@@ -555,9 +561,12 @@ async fn maintenance_loop(app: Arc<App>) -> Result<()> {
             {
                 tracing::error!(error = %e, "cleanup failed");
             }
+            let mut done_at = now;
             match app.db.backup(cfg.storage.backups).await {
                 Ok(p) => tracing::info!(file = %p.display(), "database backup written"),
                 Err(e) => {
+                    // Try again in an hour instead of tomorrow.
+                    done_at = now - 86_400 + 3600;
                     app.health
                         .fail(
                             "storage",
@@ -574,7 +583,7 @@ async fn maintenance_loop(app: Arc<App>) -> Result<()> {
                         .await;
                 }
             }
-            app.db.meta_set("last_daily", &now.to_string()).await?;
+            app.db.meta_set("last_daily", &done_at.to_string()).await?;
         }
         tokio::select! {
             () = app.cancel.cancelled() => return Ok(()),
