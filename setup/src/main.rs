@@ -946,6 +946,17 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
 
     let w = ui.as_weak();
     let cc = c.clone();
+    s.on_tg_changed(move || {
+        let Some(ui) = w.upgrade() else { return };
+        let s = ui.global::<S>();
+        lock(&cc.st).cancel.store(true, Ordering::Relaxed);
+        s.set_tg_waiting(false);
+        s.set_tg_bot(SharedString::new());
+        s.set_tg_code(SharedString::new());
+    });
+
+    let w = ui.as_weak();
+    let cc = c.clone();
     s.on_tg_check(move || {
         let Some(ui) = w.upgrade() else { return };
         let s = ui.global::<S>();

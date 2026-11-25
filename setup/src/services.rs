@@ -43,7 +43,8 @@ pub async fn telegram_bot(token: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("the bot has no user name"))
 }
 
-/// Waits for `/start <code>` in a private chat; returns the sender's ID and user name.
+/// Waits for the one-time code in a private chat, alone or as `/start <code>`; returns the
+/// sender's ID and user name. Other private messages get a hint once.
 pub async fn telegram_wait_start(
     token: &str,
     code: &str,
@@ -51,6 +52,7 @@ pub async fn telegram_wait_start(
 ) -> Result<(i64, String)> {
     let api = TelegramApi::new(http()?, secret(token));
     let mut offset = 0i64;
+    let mut hinted = std::collections::BTreeSet::new();
     while !cancelled(cancel) {
         let updates = match api.get_updates(offset, 10).await {
             Ok(u) => u,
@@ -67,23 +69,40 @@ pub async fn telegram_wait_start(
             offset = offset.max(u.update_id + 1);
             let Some(m) = u.message else { continue };
             let Some(from) = m.from else { continue };
-            let is_start = m.text.as_deref().is_some_and(|t| is_start_with(t, code));
-            if m.chat.kind == "private" && !from.is_bot && is_start {
+            if m.chat.kind != "private" || from.is_bot {
+                continue;
+            }
+            if m.text.as_deref().is_some_and(|t| has_code(t, code)) {
                 let _ = api.get_updates(offset, 0).await;
                 let name = from
                     .username
                     .map_or_else(|| format!("ID {}", from.id), |n| format!("@{n}"));
                 return Ok((from.id, name));
             }
+            if hinted.insert(m.chat.id) {
+                let _ = api
+                    .send_plain(
+                        m.chat.id,
+                        hq_watchman::tr!(
+                            "HQ Watchman Setup: чтобы подтвердить, что вы владелец, отправьте сюда код из окна программы установки.",
+                            "HQ Watchman Setup: to confirm you are the owner, send the code shown in the setup window here."
+                        ),
+                    )
+                    .await;
+            }
         }
     }
     bail!("cancelled")
 }
 
-fn is_start_with(text: &str, code: &str) -> bool {
+/// The message is the code itself or `/start <code>`.
+fn has_code(text: &str, code: &str) -> bool {
     let mut words = text.split_whitespace();
-    let cmd = words.next().unwrap_or_default();
-    (cmd == "/start" || cmd.starts_with("/start@"))
+    let first = words.next().unwrap_or_default();
+    if first == code {
+        return words.next().is_none();
+    }
+    (first == "/start" || first.starts_with("/start@"))
         && words.next() == Some(code)
         && words.next().is_none()
 }
@@ -399,12 +418,14 @@ mod tests {
 
     #[test]
     fn start_needs_the_code() {
-        assert!(is_start_with("/start Ab12", "Ab12"));
-        assert!(is_start_with(" /start@my_bot Ab12 ", "Ab12"));
-        assert!(!is_start_with("/start", "Ab12"));
-        assert!(!is_start_with("/start Ab13", "Ab12"));
-        assert!(!is_start_with("/start Ab12 x", "Ab12"));
-        assert!(!is_start_with("/startAb12", "Ab12"));
+        assert!(has_code("/start Ab12", "Ab12"));
+        assert!(has_code(" /start@my_bot Ab12 ", "Ab12"));
+        assert!(has_code(" Ab12\n", "Ab12"));
+        assert!(!has_code("/start", "Ab12"));
+        assert!(!has_code("/start Ab13", "Ab12"));
+        assert!(!has_code("/start Ab12 x", "Ab12"));
+        assert!(!has_code("/startAb12", "Ab12"));
+        assert!(!has_code("Ab12 x", "Ab12"));
     }
 
     #[test]

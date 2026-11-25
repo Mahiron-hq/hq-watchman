@@ -118,6 +118,7 @@ export global S {
     callback server-test();
     callback server-changed();
     callback tg-check();
+    callback tg-changed();
     callback tg-wait();
     callback tg-cancel();
     callback gh-create();
@@ -398,14 +399,14 @@ component TelegramPage inherits VerticalLayout {
         label: Tr.t("Токен бота", "Bot token");
         HorizontalLayout {
             spacing: 6px;
-            Edit { text <=> S.tg-token; input-type: password; placeholder-text: "123456789:AA…"; }
+            Edit { text <=> S.tg-token; input-type: password; placeholder-text: "123456789:AA…"; edited(t) => { S.tg-changed(); } }
             Button { text: Tr.t("Проверить", "Check"); enabled: !S.busy; clicked => { S.tg-check(); } }
         }
     }
     if S.tg-bot != "": Ok { text: Tr.t("Бот найден: @", "Bot found: @") + S.tg-bot; }
     if S.tg-bot != "": VerticalLayout {
         spacing: 8px;
-        Hint { text: Tr.t("2. Нажмите кнопку ниже: откроется ваш бот, нажмите в нём «Запустить» (Start). Бот получит одноразовый код, так программа узнает ваш ID: только вы сможете управлять ботом.", "2. Press the button below: your bot opens, press Start there. The bot receives a one-time code, so the app learns your ID: only you will be able to control the bot."); }
+        Hint { text: Tr.t("2. Нажмите «Открыть бота», затем в Telegram нажмите «Запустить» (Start). Так программа узнает ваш ID по одноразовому коду: только вы сможете управлять ботом.", "2. Press Open the bot, then press Start in Telegram. The app learns your ID from a one-time code: only you will be able to control the bot."); }
         HorizontalLayout {
             spacing: 10px;
             alignment: start;
@@ -414,7 +415,8 @@ component TelegramPage inherits VerticalLayout {
             if S.tg-waiting: Button { text: Tr.t("Открыть снова", "Open again"); clicked => { S.open-url("https://t.me/" + S.tg-bot + "?start=" + S.tg-code); } }
             if S.tg-waiting: Button { text: Tr.t("Отмена", "Cancel"); clicked => { S.tg-cancel(); } }
         }
-        if S.tg-waiting: Hint { text: Tr.t("Если Telegram не открылся, отправьте боту @", "If Telegram did not open, send the bot @") + S.tg-bot + Tr.t(" сообщение: /start ", " this message: /start ") + S.tg-code; }
+        if S.tg-waiting: Hint { text: Tr.t("Если кнопки Start нет или ничего не произошло, отправьте боту @", "If there is no Start button or nothing happened, send the bot @") + S.tg-bot + Tr.t(" этот код сообщением:", " this code as a message:"); }
+        if S.tg-waiting: Sel { text: S.tg-code; font-size: 20px; font-weight: 700; font-family: "Consolas"; }
     }
     if S.tg-admin != "": Ok { text: Tr.t("Владелец: ", "Owner: ") + S.tg-admin-name + " (ID " + S.tg-admin + ")"; }
     Field {

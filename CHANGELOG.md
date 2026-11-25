@@ -9,7 +9,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Setup: installing after changing the server address, port, user or key no longer uses the connection tested earlier; the connection has to be tested again.
 - Setup: on a Linux server, files on their way into place go through a folder only root can write instead of `/tmp`.
 - Setup on Windows: the user account may only read the installation folder and change the data folder, so it can no longer replace the program that runs as LOCAL SERVICE. The administrator script is passed on the command line, and staged files are checked by SHA-256 after they are copied into a protected folder.
-- Setup: the bot owner is set by `/start` with a one-time code, so another person who sends `/start` first is not taken as the owner.
+- Setup: the bot owner is set by a one-time code (sent by the Start button or typed into the bot chat), so another person who sends `/start` first is not taken as the owner. Editing the bot token resets the bot check.
 - Steam app info is downloaded only from Steam hosts, and inline app info is checked against its size and SHA-1.
 - Webhook IP filter: while the GitHub address ranges are not loaded, deliveries get 503 and are redelivered later instead of being accepted from any address.
 

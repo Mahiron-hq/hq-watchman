@@ -32,7 +32,7 @@ The app asks only what the chosen sources need:
 1. **Where the bot runs**: a Linux server (Debian or Ubuntu) in Docker, a Linux server as a systemd service without Docker, or this Windows computer as a background task (works only while the computer is on).
 2. **Server**: address, SSH port, user, password or key. The app checks access and root rights. Passwords are never saved; the server key is shown once for confirmation and pinned.
 3. **Sources**: GitHub, Steam guides, Steam games, any combination.
-4. **Telegram**: create a bot in @BotFather, paste the token, press Open the bot and then Start in Telegram. The bot receives a one-time code, and the app takes your ID only from the message with that code.
+4. **Telegram**: create a bot in @BotFather, paste the token, press Open the bot and then Start in Telegram. The bot receives a one-time code, and the app takes your ID only from the message with that code. If Start does nothing, send the code shown in the app to the bot as a message.
 5. **GitHub**: your login and the mode. *Polling* needs nothing else (events arrive within a minute). *Webhook* needs a domain or subdomain pointing to the server; the HTTPS certificate is obtained automatically. The app opens GitHub in the browser: press **Create GitHub App**, then **Install** on **All repositories**. Access is read-only.
 6. **Steam guides**: a link to your profile. The Web API key is optional.
 7. **Steam games**: search by name, store link or AppID.
