@@ -773,8 +773,12 @@ pub async fn restore(s: &Session, t: Target, db: &[u8], log: &Log) -> Result<()>
         ),
     };
     let files = "hq-watchman.db hq-watchman.db-wal hq-watchman.db-shm";
+    // Puts the old files back only when the old main file was moved away.
+    let back = format!(
+        "if [ -f \"$d/{keep}/hq-watchman.db\" ]; then\n  for f in {files}; do rm -f \"$d/$f\"; done\n  for f in {files}; do if [ -f \"$d/{keep}/$f\" ]; then mv -f \"$d/{keep}/$f\" \"$d/\"; fi; done\n  rmdir \"$d/{keep}\" 2>/dev/null || true\nfi\n{start}"
+    );
     let script = format!(
-        "{stop}\nd={dir}\ntest -d \"$d\"\ninstall -d -m 700 \"$d/{keep}\"\nchown {owner} \"$d/{keep}\"\nfor f in {files}; do if [ -f \"$d/$f\" ]; then mv -f \"$d/$f\" \"$d/{keep}/\"; fi; done\ninstall -m 600 /var/lib/hq-watchman-setup/restore.db \"$d/hq-watchman.db\"\nchown {owner} \"$d/hq-watchman.db\"\nrm -f /var/lib/hq-watchman-setup/restore.db\n{start}"
+        "{stop}\nd={dir}\ntest -d \"$d\"\nswap() {{\n  install -d -m 700 \"$d/{keep}\" && chown {owner} \"$d/{keep}\" || return 1\n  for f in {files}; do if [ -f \"$d/$f\" ]; then mv -f \"$d/$f\" \"$d/{keep}/\" || return 1; fi; done\n  install -m 600 {STAGE}/restore.db \"$d/hq-watchman.db\" && chown {owner} \"$d/hq-watchman.db\" && {start}\n}}\nif swap; then rm -f {STAGE}/restore.db; exit 0; fi\nrm -f {STAGE}/restore.db\necho 'restore failed, the previous database is put back' >&2\n{back}\nexit 1"
     );
     step(
         s,
@@ -798,10 +802,8 @@ pub async fn restore(s: &Session, t: Target, db: &[u8], log: &Log) -> Result<()>
                 "The bot did not start, putting the previous database back"
             )
         ));
-        let back = format!(
-            "{stop}\nd={dir}\ntest -d \"$d/{keep}\"\nfor f in {files}; do rm -f \"$d/$f\"; if [ -f \"$d/{keep}/$f\" ]; then mv -f \"$d/{keep}/$f\" \"$d/\"; fi; done\nrmdir \"$d/{keep}\" 2>/dev/null || true\n{start}"
-        );
-        step(s, log, tr!("Откат", "Rollback"), &back).await?;
+        let script = format!("{stop}\nd={dir}\ntest -d \"$d/{keep}\"\n{back}");
+        step(s, log, tr!("Откат", "Rollback"), &script).await?;
         return Err(e);
     }
     Ok(())

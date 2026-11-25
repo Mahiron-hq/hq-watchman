@@ -15,6 +15,7 @@ use crate::storage::Db;
 use crate::text;
 
 const MAX_DLC: usize = 500;
+const NEWS_MAX_AGE: i64 = 30 * 86_400;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Branch {
@@ -225,16 +226,14 @@ async fn fetch_states(
     steam: &SteamHttp,
     appids: &[u32],
     old: &BTreeMap<u32, GameState>,
-) -> Result<BTreeMap<u32, GameState>> {
+) -> Result<(BTreeMap<u32, GameState>, Vec<u32>)> {
     let info = super::cm::fetch_product_info(steam.http(), appids).await?;
     let mut parsed = BTreeMap::new();
+    let mut skipped = Vec::new();
     for raw in &info.apps {
         // A game without its token may lack private branches; DLC info is public anyway.
         if raw.public_only {
-            tracing::warn!(
-                appid = raw.appid,
-                "PICS answered without the access token, game skipped this time"
-            );
+            skipped.push(raw.appid);
             continue;
         }
         parsed.insert(raw.appid, (raw.change_number, parse_app_info(&raw.text)?));
@@ -256,14 +255,30 @@ async fn fetch_states(
         let mut dlcs = BTreeMap::new();
         for id in &app.dlc_ids {
             let own = dlc_info.get(id);
+            let mut content: Vec<(String, String)> =
+                app.dlc_depots.get(id).cloned().unwrap_or_default();
             if own.is_none() {
                 if let Some(prev) = old.get(&appid).and_then(|o| o.dlcs.get(id)) {
-                    dlcs.insert(*id, prev.clone());
+                    // Parent depots are fresh; the rest of the stored content stays as it was.
+                    let fresh: BTreeSet<&str> = content.iter().map(|(d, _)| d.as_str()).collect();
+                    let kept: Vec<(String, String)> = prev
+                        .content
+                        .iter()
+                        .filter(|(d, _)| !fresh.contains(d.as_str()))
+                        .cloned()
+                        .collect();
+                    content.extend(kept);
+                    content.sort();
+                    dlcs.insert(
+                        *id,
+                        DlcState {
+                            content,
+                            ..prev.clone()
+                        },
+                    );
                     continue;
                 }
             }
-            let mut content: Vec<(String, String)> =
-                app.dlc_depots.get(id).cloned().unwrap_or_default();
             if let Some(d) = own {
                 content.extend(d.own_depots.iter().cloned());
             }
@@ -295,7 +310,7 @@ async fn fetch_states(
             },
         );
     }
-    Ok(states)
+    Ok((states, skipped))
 }
 
 #[derive(Deserialize)]
@@ -375,10 +390,8 @@ impl GamesPoller {
                 stored.insert(appid, s);
             }
         }
-        match fetch_states(steam, appids, &stored).await {
-            Ok(states) => {
-                self.pics_failing_since = None;
-                health.ok("pics").await;
+        let failure = match fetch_states(steam, appids, &stored).await {
+            Ok((states, skipped)) => {
                 for (appid, mut state) in states {
                     let key = i64::from(appid);
                     let old: Option<GameState> = db
@@ -409,24 +422,43 @@ impl GamesPoller {
                     )
                     .await?;
                 }
-            }
-            Err(e) => {
-                let now = crate::now();
-                let since = *self.pics_failing_since.get_or_insert(now);
-                let interval = i64::try_from(cfg.intervals.games_minutes)? * 60;
-                let threshold = u32::try_from(3600 / interval.max(1)).unwrap_or(1) + 1;
-                health
-                    .fail(
-                        "pics",
-                        &format!("{e:#}"),
-                        threshold,
-                        crate::tr!("ничего, бот перешёл на запасной сигнал (проверка версии через Steam Web API) и вернётся к PICS сам", "nothing, the bot switched to the fallback (version check via Steam Web API) and returns to PICS by itself"),
-                    )
-                    .await;
-                if now - since >= 3600 {
-                    self.fallback(appids, db, steam, merge).await?;
+                if skipped.is_empty() {
+                    None
+                } else {
+                    let list = skipped
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let msg = crate::trf!(
+                        "PICS ответил без токена доступа для приложений {list}",
+                        "PICS answered without the access token for apps {list}"
+                    );
+                    tracing::warn!(apps = %list, "PICS answered without the access token");
+                    Some((msg, skipped))
                 }
             }
+            Err(e) => Some((format!("{e:#}"), appids.to_vec())),
+        };
+        if let Some((msg, failed)) = failure {
+            let now = crate::now();
+            let since = *self.pics_failing_since.get_or_insert(now);
+            let interval = i64::try_from(cfg.intervals.games_minutes)? * 60;
+            let threshold = u32::try_from(3600 / interval.max(1)).unwrap_or(1) + 1;
+            health
+                .fail(
+                    "pics",
+                    &msg,
+                    threshold,
+                    crate::tr!("ничего, бот перешёл на запасной сигнал (проверка версии через Steam Web API) и вернётся к PICS сам", "nothing, the bot switched to the fallback (version check via Steam Web API) and returns to PICS by itself"),
+                )
+                .await;
+            if now - since >= 3600 {
+                self.fallback(&failed, db, steam, merge).await?;
+            }
+        } else {
+            self.pics_failing_since = None;
+            health.ok("pics").await;
         }
         let news_result = Self::poll_news(cfg, appids, db, steam, merge).await;
         match news_result {
@@ -504,6 +536,7 @@ impl GamesPoller {
             let first_time = db.meta_get(&base_key).await?.is_none();
             let mut gids = Vec::new();
             let mut events = Vec::new();
+            let oldest = crate::now() - NEWS_MAX_AGE;
             for item in resp.appnews.newsitems {
                 if !item.gid.bytes().all(|b| b.is_ascii_digit())
                     || item.gid.is_empty()
@@ -515,7 +548,8 @@ impl GamesPoller {
                     continue;
                 }
                 gids.push(item.gid.clone());
-                if first_time {
+                // An old item may come back after its ID left the seen list.
+                if first_time || item.date < oldest {
                     continue;
                 }
                 let patch = item.tags.iter().any(|t| t == "patchnotes");

@@ -191,7 +191,8 @@ impl Sender {
     }
 
     /// Sends files in order, later ones as replies to the first. After a failure past the
-    /// first file the unsent ones are handed back to be queued, so nothing goes out twice.
+    /// first file the unsent ones are handed back to be queued, so sent parts are not repeated
+    /// on retry; a crash before the state is saved can still repeat a part.
     async fn send_parts(
         &self,
         chat: Option<i64>,

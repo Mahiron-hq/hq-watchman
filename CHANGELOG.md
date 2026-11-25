@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.1.3] - 2026-11-25
+
+### Fixed
+
+- Setup: a database restore that fails while files are swapped or the bot is started puts the previous database back and starts the bot again (Linux server and Windows); before, the bot could stay stopped.
+- Setup: editing the bot token while it is being checked no longer shows the old bot's name or takes the owner ID from the old bot.
+- A game that Steam PICS answers without its access token now counts as a PICS failure: you get the usual alert, and after an hour the game is checked by the Steam Web API fallback.
+- When the parent game answers but a DLC's own info is missing, changes in the DLC depots listed by the game are no longer missed.
+- Polling mode: a GitHub delivery log longer than 3000 entries is read over several passes from a saved position, so older deliveries are no longer left out.
+- A Telegram command or button press whose handling fails is retried with a growing pause for up to an hour, then skipped with a message to you.
+- Steam news older than 30 days is not sent, so an old item that returns to the feed is not sent again.
+- Repository buttons in `/settings` carry a 64-bit tag, so an old button can hardly switch a different repository.
+
 ## [0.1.2] - 2026-11-25
 
 ### Fixed

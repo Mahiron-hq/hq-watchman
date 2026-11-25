@@ -285,11 +285,16 @@ impl GithubApi {
         Ok((out, false))
     }
 
-    /// Webhook deliveries newer than `since` (unix seconds), newest first, and whether
-    /// the list reaches back to `since`.
-    pub async fn deliveries(&self, since: i64) -> Result<(Vec<Delivery>, bool), GhError> {
+    /// Webhook deliveries newer than `since` (unix seconds), newest first, read from `from`
+    /// (or the newest one) up to the page limit. Also gives the cursor where reading
+    /// stopped, `None` when the list reaches back to `since`.
+    pub async fn deliveries(
+        &self,
+        since: i64,
+        from: Option<String>,
+    ) -> Result<(Vec<Delivery>, Option<String>), GhError> {
         let mut out = Vec::new();
-        let mut cursor: Option<String> = None;
+        let mut cursor = from;
         for _ in 0..30 {
             let path = match &cursor {
                 Some(c) => format!("/app/hook/deliveries?per_page=100&cursor={c}"),
@@ -307,10 +312,10 @@ impl GithubApi {
             }
             cursor = next_cursor(&headers);
             if done || cursor.is_none() {
-                return Ok((out, true));
+                return Ok((out, None));
             }
         }
-        Ok((out, false))
+        Ok((out, cursor))
     }
 
     /// Full delivery including the payload GitHub tried to send.

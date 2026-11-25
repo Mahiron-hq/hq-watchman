@@ -36,7 +36,7 @@ pub enum Action {
     Show(View),
     Toggle(String),
     /// Page, row on the page and a tag of the repository name shown on the button.
-    Repo(usize, usize, u32),
+    Repo(usize, usize, u64),
     Ask(Prompt),
     RemoveGame(u32),
     PickGame(u32),
@@ -82,7 +82,7 @@ pub fn parse(data: &str) -> Option<Action> {
         ["r", _, _, tag] => Action::Repo(
             usize::try_from(num(1)?).ok()?,
             usize::try_from(num(2)?).ok()?,
-            u32::from_str_radix(tag, 16).ok()?,
+            u64::from_str_radix(tag, 16).ok()?,
         ),
         ["ask", "game"] => Action::Ask(Prompt::AddGame),
         ["ask", "qh"] => Action::Ask(Prompt::QuietHours),
@@ -423,16 +423,16 @@ fn repos_view(s: &Settings, repos: &[String], page: usize) -> (String, Keyboard)
 
 /// Switches the exclusion of the repository shown at `page`/`idx`.
 /// Short tag of a repository name, so an old button cannot switch a different repository.
-fn repo_tag(name: &str) -> u32 {
+fn repo_tag(name: &str) -> u64 {
     name.to_ascii_lowercase()
         .bytes()
-        .fold(0x811c_9dc5u32, |h, b| {
-            (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+        .fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
         })
 }
 
 /// Switches the repository behind a button; false when the list changed since it was shown.
-pub fn toggle_repo(s: &mut Settings, repos: &[String], page: usize, idx: usize, tag: u32) -> bool {
+pub fn toggle_repo(s: &mut Settings, repos: &[String], page: usize, idx: usize, tag: u64) -> bool {
     let Some(name) = repos
         .get(page * REPOS_PER_PAGE + idx)
         .filter(|n| repo_tag(n) == tag)

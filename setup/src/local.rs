@@ -359,6 +359,13 @@ pub async fn restore(db: Vec<u8>, log: &Log) -> Result<()> {
   New-Item -ItemType Directory $keep | Out-Null
   foreach ($n in @({DB_FILES})) {{ if (Test-Path "$d\$n") {{ Move-Item "$d\$n" $keep -Force }} }}
   Copy-Item "$in\restore.db" "$d\hq-watchman.db" -Force
+}} catch {{
+  if (Test-Path "$keep\hq-watchman.db") {{
+    foreach ($n in @({DB_FILES})) {{ Remove-Item "$d\$n" -Force -ErrorAction SilentlyContinue }}
+    foreach ($n in @({DB_FILES})) {{ if (Test-Path "$keep\$n") {{ Move-Item "$keep\$n" $d -Force }} }}
+    Remove-Item $keep -Force -ErrorAction SilentlyContinue
+  }}
+  throw
 }} finally {{
   Remove-Item $in -Recurse -Force -ErrorAction SilentlyContinue
   Start-ScheduledTask -TaskName '{TASK}'
@@ -390,11 +397,11 @@ pub async fn restore(db: Vec<u8>, log: &Log) -> Result<()> {
 $d = '{WINDOWS_DIR}\data'
 $keep = "$d\{keep}"
 if (-not (Test-Path $keep)) {{ throw 'the saved database is missing' }}
-foreach ($n in @({DB_FILES})) {{
-  Remove-Item "$d\$n" -Force -ErrorAction SilentlyContinue
-  if (Test-Path "$keep\$n") {{ Move-Item "$keep\$n" $d -Force }}
+if (Test-Path "$keep\hq-watchman.db") {{
+  foreach ($n in @({DB_FILES})) {{ Remove-Item "$d\$n" -Force -ErrorAction SilentlyContinue }}
+  foreach ($n in @({DB_FILES})) {{ if (Test-Path "$keep\$n") {{ Move-Item "$keep\$n" $d -Force }} }}
+  Remove-Item $keep -Force -ErrorAction SilentlyContinue
 }}
-Remove-Item $keep -Force -ErrorAction SilentlyContinue
 Start-ScheduledTask -TaskName '{TASK}'
 "#
             ))

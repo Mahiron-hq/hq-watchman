@@ -15,6 +15,9 @@ use crate::event::Event;
 use crate::text::{escape_html, external_html};
 
 const STALE_AFTER: i64 = 300;
+const UPDATE_RETRY_FOR: i64 = 3600;
+// Stays below the 180 s heartbeat limit of the polling loop.
+const UPDATE_RETRY_MAX_PAUSE: u64 = 60;
 const PROMPT_TTL: i64 = 600;
 
 /// Command menu in the current language.
@@ -1095,10 +1098,25 @@ impl Poller {
         Ok(s)
     }
 
+    async fn report_skipped(&self, id: i64, error: &str) {
+        let ev = Event::service(
+            format!("bot:update_skipped:{id}"),
+            crate::tr!("Telegram: команда пропущена", "Telegram: command skipped"),
+            crate::trf!(
+                "Команду или нажатие кнопки не удалось обработать в течение часа, оно пропущено. Ошибка: {error}",
+                "A command or button press could not be handled for an hour and was skipped. Error: {error}"
+            ),
+        );
+        if let Err(e) = self.app.db.enqueue(&ev).await {
+            tracing::error!(error = %e, "cannot queue service message");
+        }
+    }
+
     pub async fn run(mut self) -> Result<()> {
         let mut offset = 0i64;
         let mut delay = 1u64;
-        let mut failed: (i64, u32) = (-1, 0);
+        // Update id, first failure time, next pause.
+        let mut failed: (i64, i64, u64) = (-1, 0, 0);
         loop {
             self.app.health.beat("telegram_poll", 180);
             let updates = tokio::select! {
@@ -1109,7 +1127,7 @@ impl Poller {
                 Ok(list) => {
                     delay = 1;
                     self.app.health.ok("telegram").await;
-                    // A failed update is fetched again; after three failures it is skipped.
+                    // A failed update is fetched again with a growing pause; after an hour it is skipped.
                     for u in list {
                         let id = u.update_id;
                         if id < offset {
@@ -1118,17 +1136,22 @@ impl Poller {
                         match self.handle(u).await {
                             Ok(()) => offset = id + 1,
                             Err(e) => {
+                                let now = crate::now();
                                 failed = if failed.0 == id {
-                                    (id, failed.1 + 1)
+                                    (id, failed.1, (failed.2 * 2).min(UPDATE_RETRY_MAX_PAUSE))
                                 } else {
-                                    (id, 1)
+                                    (id, now, 2)
                                 };
-                                if failed.1 >= 3 {
-                                    tracing::error!(update = id, error = %e, "update handling failed three times, skipped");
+                                if now - failed.1 >= UPDATE_RETRY_FOR {
+                                    tracing::error!(update = id, error = %e, "update handling failed for an hour, skipped");
+                                    self.report_skipped(id, &e.to_string()).await;
                                     offset = id + 1;
                                 } else {
                                     tracing::warn!(update = id, error = %e, "update handling failed, will retry");
-                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                    tokio::select! {
+                                        () = self.app.cancel.cancelled() => return Ok(()),
+                                        () = tokio::time::sleep(Duration::from_secs(failed.2)) => {}
+                                    }
                                     break;
                                 }
                             }

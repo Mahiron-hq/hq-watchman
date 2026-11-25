@@ -155,10 +155,10 @@ async fn sync_repos(app: &App) -> Result<(), GhError> {
 
 /// Asks GitHub to redeliver deliveries that never reached the bot. Returns how many.
 async fn redeliver_failed(app: &App) -> Result<usize, GhError> {
-    let (deliveries, complete) = api(app)?
-        .deliveries(crate::now() - DELIVERY_HISTORY)
+    let (deliveries, rest) = api(app)?
+        .deliveries(crate::now() - DELIVERY_HISTORY, None)
         .await?;
-    if !complete {
+    if rest.is_some() {
         tracing::warn!(
             "GitHub delivery log longer than the page limit, only the newest part checked"
         );

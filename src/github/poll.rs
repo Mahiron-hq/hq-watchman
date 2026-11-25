@@ -14,7 +14,8 @@ const HISTORY: i64 = 3 * 86_400;
 const OVERLAP: i64 = 600;
 const MAX_PER_PASS: usize = 300;
 
-/// Reads deliveries newer than the last pass and processes those not seen yet.
+/// Reads deliveries newer than the last pass and processes those not seen yet. A log longer
+/// than one read is walked over several passes from a saved cursor.
 async fn poll_once(app: &Arc<App>) -> Result<usize, GhError> {
     let Some(gh) = app.github.as_ref() else {
         return Ok(0);
@@ -26,24 +27,32 @@ async fn poll_once(app: &Arc<App>) -> Result<usize, GhError> {
         .await?
         .and_then(|v| v.parse::<i64>().ok())
         .map_or(now - HISTORY, |t| (t - OVERLAP).max(now - HISTORY));
-    let (mut list, whole) = gh.deliveries(since).await?;
-    if !whole {
-        tracing::warn!("GitHub delivery log longer than the page limit, the polling mark is kept");
-    }
+    let scan = app
+        .db
+        .meta_get("poll_scan")
+        .await?
+        .as_deref()
+        .and_then(parse_scan);
+    let resumed = scan.is_some();
+    let (started, from) = scan.map_or((now, None), |(t, c)| (t, Some(c)));
+    let (mut list, rest) = match gh.deliveries(since, from).await {
+        // A cursor GitHub no longer accepts must not stop polling for good.
+        Err(e) if resumed && !matches!(e, GhError::RateLimited(_)) => {
+            app.db.meta_del("poll_scan").await?;
+            return Err(e);
+        }
+        r => r?,
+    };
     list.sort_by_key(|d| d.id);
-    let mut newest = since + OVERLAP;
     let mut done = 0usize;
     let mut seen = std::collections::BTreeSet::new();
-    let mut complete = true;
     for d in list {
-        let ts = super::parse_ts(&d.delivered_at).unwrap_or(now);
         if !seen.insert(d.guid.clone()) || app.db.has_delivery(&d.guid).await? {
-            newest = newest.max(ts);
             continue;
         }
         if done >= MAX_PER_PASS {
-            complete = false;
-            break;
+            // The same pages are read again next pass; handled ones are skipped then.
+            return Ok(done);
         }
         let detail = gh.delivery(d.id).await?;
         let event = detail.event.as_str();
@@ -58,18 +67,26 @@ async fn poll_once(app: &Arc<App>) -> Result<usize, GhError> {
             continue;
         };
         process(app, event, &detail.guid, &body).await?;
-        newest = newest.max(ts);
         done += 1;
     }
-    if complete {
-        newest = newest.max(now);
-    }
-    if whole {
-        app.db.meta_set("poll_since", &newest.to_string()).await?;
+    if let Some(cursor) = rest {
+        tracing::warn!("GitHub delivery log longer than one read, the rest is read next pass");
+        app.db
+            .meta_set("poll_scan", &format!("{started}:{cursor}"))
+            .await?;
+    } else {
+        app.db.meta_set("poll_since", &started.to_string()).await?;
+        if resumed {
+            app.db.meta_del("poll_scan").await?;
+        }
     }
     Ok(done)
 }
 
+fn parse_scan(v: &str) -> Option<(i64, String)> {
+    let (t, c) = v.split_once(':')?;
+    Some((t.parse().ok()?, c.to_owned())).filter(|(_, c)| !c.is_empty())
+}
 pub async fn run(app: Arc<App>) -> Result<()> {
     loop {
         let interval = app.cfg().github.poll_seconds;

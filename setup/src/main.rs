@@ -964,7 +964,13 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
         let token = s.get_tg_token().trim().to_owned();
         cc.task(move |c| async move {
             let name = services::telegram_bot(&token).await?;
-            c.ui(move |ui| ui.global::<S>().set_tg_bot(name.into()));
+            c.ui(move |ui| {
+                let s = ui.global::<S>();
+                // The token may have been edited while the check was running.
+                if s.get_tg_token().trim() == token {
+                    s.set_tg_bot(name.into());
+                }
+            });
             Ok(())
         });
     });
@@ -998,6 +1004,9 @@ fn wire_wizard(ui: &MainWindow, c: &Ctx) {
             }
             c.ui(move |ui| {
                 let s = ui.global::<S>();
+                if s.get_tg_token().trim() != token {
+                    return;
+                }
                 s.set_tg_waiting(false);
                 match r {
                     Ok((id, name)) => {
